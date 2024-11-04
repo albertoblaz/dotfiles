@@ -1,0 +1,19 @@
+[color]
+        ui = true
+[user]
+        name = Alberto Blazquez
+        email = WORK_EMAIL_ADDRESS
+        signingkey = /Users/alberto/.ssh/id_ed25519_sign.pub
+[alias]
+        gst = git status
+        st = status
+        df = diff
+        co = checkout
+        br = branch
+[push]
+        default = current
+[pull]
+        rebase = true
+[gpg]
+        format = ssh
+
