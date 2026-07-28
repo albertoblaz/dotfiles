@@ -31,7 +31,7 @@ where no formula exists: **Claude Code**, **rtk**, **oh-my-zsh**.
 | git config | copies the repo's `.gitconfig` to `~/.gitconfig`, filling the email placeholder |
 | Apple toolchain | Xcode Command Line Tools, full Xcode (**Mac App Store**), iOS simulator runtime |
 | Snippets | pet config fetched from this repo + token from 1Password + `pet sync` |
-| SSH | new `~/.ssh/id_ed25519`, stored in 1Password **and registered on GitHub** |
+| SSH | key **generated in 1Password** (SSH Key item), served by the **1Password SSH agent** (private key never on disk), **registered on GitHub** |
 | Workspace | `~/git/` + clones my repos (see below) |
 
 Formulae and casks each install in a **single `brew` call** so bottles download in
@@ -48,8 +48,9 @@ The Command Line Tools come in automatically with the Homebrew install.
 
 There's no Trello desktop app anymore, so it's installed as a **Chrome app**: the
 script opens Trello in Chrome — install it via **⋮ ▸ Cast, save, and share ▸
-Install page as app…**. A marker under `~/.config/mac-bootstrap/` keeps re-runs
-from reopening it.
+Install page as app…**. It **detects the actual installed app** (Chrome PWAs live
+under `~/Applications/Chrome Apps.localized/`), so re-runs only reopen the page if
+Trello isn't installed yet — no false "already set up".
 
 ### Chrome sign-in
 
@@ -69,9 +70,11 @@ account, split the prompt back into two.)
 ### pet
 
 If `~/.config/pet/config.toml` is missing, the script downloads the **sanitized**
-config from this repo (`pet/config.toml`), then **injects the real Gist token from
-1Password** before running `pet sync`. The committed config carries a **blank**
-`access_token` — the secret never lives in git.
+config from this repo (`pet/config.toml`). It then **injects the real Gist token
+from 1Password whenever `access_token` is still blank** — on every re-run, not just
+the first download — so a config written before 1Password CLI was connected gets
+fixed on the next run. `pet sync` only runs once the token is present. The committed
+config carries a **blank** `access_token` — the secret never lives in git.
 
 The token is read from the 1Password item named **`pet - Github Classic Token`**
 (override with `PET_OP_ITEM`). If that item doesn't exist, the script **creates it**
@@ -91,23 +94,39 @@ Isolated and **non-fatal** — an unattended run finishes everything else and te
 you what still needs you:
 
 - **Xcode** — install from the App Store (Apple ID), then re-run.
-- **1Password** — storing the SSH key needs `op` **signed in** (desktop-app
-  integration or `op signin`).
-- **GitHub SSH key** — `gh` must be authenticated (`gh auth login`) **with the
-  `write:public_key` scope**. The script runs `gh auth refresh -h github.com -s
-  write:public_key` (opens a browser) when the scope is missing, then **re-checks**:
-  if the scope is still absent it **warns and skips** the upload (pointing you to
-  `github.com/settings/keys`) rather than failing silently.
+- **1Password** — two one-time in-app toggles (Settings ▸ Developer), neither
+  scriptable: **Integrate with 1Password CLI** (needed to generate the SSH key and
+  read the pet token) and **Use the SSH agent** (serves the SSH key so the private
+  key never touches disk). The script detects the SSH agent and opens 1Password if
+  it's off.
+- **GitHub SSH key** — if `gh` isn't authenticated, the script **runs `gh auth
+  login`** so you're prompted through it. Suggested answers: **github.com · SSH ·
+  your `~/.ssh/id_ed25519` key · title `gh` · authenticate with your PAT**. Your
+  PAT (from 1Password) just needs the **`write:public_key`** (`admin:public_key`)
+  scope — no `--scopes` flag is needed, since token scopes come from the PAT.
+  Choosing SSH during login uploads the key directly; the script's follow-up add
+  then reports "already registered" instead of erroring.
 - **Chrome sign-in** and **Trello** — one-time browser steps.
 
 ## SSH key → GitHub → clone
 
-1. Generates `~/.ssh/id_ed25519` **only if none exists** (never overwrites), sets
-   perms, wires it into the ssh-agent + macOS Keychain.
-2. Uploads the private key to **1Password** as a document.
-3. Registers the **public** key on **GitHub** via `gh ssh-key add`.
+Uses the **1Password SSH agent** — the private key never touches disk.
+
+1. **Generates the key inside 1Password** as a proper **SSH Key** item
+   (`op item create --category ssh`) — the op CLI can't *import* an existing key as
+   an SSH Key item (desktop-app only), so generating it there is the way to get the
+   right item type. Idempotent: skips if the item already exists. Defaults to the
+   `Personal` vault; set `OP_VAULT=…` to override.
+2. Pulls **only the public key** to `~/.ssh/id_ed25519.pub` (for the ssh-config
+   `IdentityFile` and the GitHub upload), and writes `~/.ssh/config` to point at the
+   1Password agent socket with a `Host github.com` block (`IdentitiesOnly yes` +
+   that one `IdentityFile`) so GitHub authorizes **once per session, not per key**.
+   With Touch ID unlock this is seamless. If `op` isn't available it **falls back to
+   a local on-disk key + Keychain** so the clone still works.
+3. Registers the **public** key on **GitHub** via `gh ssh-key add` (treats
+   "already in use" as success).
 4. Pre-trusts `github.com` (`ssh-keyscan`) so the first SSH clone doesn't hang, then
-   clones the repos over SSH.
+   clones the repos over SSH — **skipping any repo already present in `~/git/`**.
 
 ## Security note — pet token
 
