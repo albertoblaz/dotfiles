@@ -400,35 +400,31 @@ section "Add SSH key to GitHub"
 if ! have gh; then
   warn "gh not found — skipping GitHub key upload."
 elif [[ "$DRYRUN" == "1" ]]; then
-  echo -e "${YELLOW}[dry-run]${NC} gh auth login (if needed) with write:public_key, then gh ssh-key add ${SSH_KEY}.pub"
+  echo -e "${YELLOW}[dry-run]${NC} gh auth login (if not authenticated), then gh ssh-key add ${SSH_KEY}.pub"
 else
-  # If gh isn't authenticated, PROMPT the user through `gh auth login` right here
-  # (interactive) instead of just bailing. Request write:public_key up front so
-  # the same login grants the scope `gh ssh-key add` needs.
+  # If gh isn't authenticated, walk the user through `gh auth login`. Scopes come
+  # from the token, so no --scopes flag is needed with a PAT — just make sure the
+  # PAT has write:public_key (admin:public_key). Choosing the SSH protocol during
+  # login also offers to upload this public key, which registers it directly.
   if ! gh auth status >/dev/null 2>&1; then
-    info "gh is not authenticated — starting 'gh auth login' (grant the write:public_key scope)…"
-    gh auth login -h github.com -s write:public_key || warn "gh auth login was cancelled or failed."
+    info "gh is not authenticated — starting 'gh auth login'…"
+    info "Suggested answers: github.com · SSH · your ~/.ssh/id_ed25519 key · title 'gh' · authenticate with your PAT."
+    gh auth login || warn "gh auth login was cancelled or failed."
   fi
-  scope_ok=1
   if ! gh auth status >/dev/null 2>&1; then
-    scope_ok=0   # still not logged in
-  elif ! gh auth status 2>&1 | grep -qiE 'public_key'; then
-    warn "gh token lacks the write:public_key scope — requesting it (opens a browser)…"
-    gh auth refresh -h github.com -s write:public_key || true
-    gh auth status 2>&1 | grep -qiE 'public_key' || scope_ok=0
-  fi
-  if [[ "$scope_ok" == "0" ]]; then
-    warn "⚠ Cannot register the SSH key on GitHub: the write:public_key scope is still missing."
-    warn "  Run 'gh auth refresh -h github.com -s write:public_key' and re-run, or add"
-    warn "  ${SSH_KEY}.pub manually at https://github.com/settings/keys."
+    warn "gh still not authenticated — add ${SSH_KEY}.pub manually at https://github.com/settings/keys."
   else
-    KEY_TITLE="$(hostname -s) (bootstrap)"
-    if [[ "$DRYRUN" != "1" ]] && gh ssh-key list 2>/dev/null | grep -qF "$(awk '{print $2}' "${SSH_KEY}.pub" 2>/dev/null)"; then
-      ok "This key is already registered on GitHub"
+    # Ensure the key is registered. The SSH-protocol login may already have added
+    # it; a repeat add returns "already in use", which we treat as success.
+    if add_out="$(gh ssh-key add "${SSH_KEY}.pub" --title "$(hostname -s)" 2>&1)"; then
+      ok "Registered SSH key on GitHub"
+    elif grep -qiE 'already' <<<"$add_out"; then
+      ok "SSH key already registered on GitHub"
     else
-      info "Uploading public key to GitHub…"
-      run gh ssh-key add "${SSH_KEY}.pub" --title "$KEY_TITLE" \
-        || warn "Could not add key to GitHub — add ${SSH_KEY}.pub manually at github.com/settings/keys."
+      warn "Could not add the key to GitHub:"
+      warn "  $add_out"
+      warn "Your PAT likely needs the write:public_key (admin:public_key) scope, or add"
+      warn "  ${SSH_KEY}.pub manually at https://github.com/settings/keys."
     fi
   fi
 fi

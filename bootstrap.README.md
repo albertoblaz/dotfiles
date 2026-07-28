@@ -96,9 +96,12 @@ you what still needs you:
   Developer ▸ Integrate with 1Password CLI** (then it uses the app's session /
   Touch ID). Needed for storing the SSH key and reading the pet token.
 - **GitHub SSH key** — if `gh` isn't authenticated, the script **runs `gh auth
-  login` for you** (requesting the `write:public_key` scope), so you're prompted
-  rather than the step failing. If the scope still ends up missing it **warns and
-  skips**, pointing you to `github.com/settings/keys`.
+  login`** so you're prompted through it. Suggested answers: **github.com · SSH ·
+  your `~/.ssh/id_ed25519` key · title `gh` · authenticate with your PAT**. Your
+  PAT (from 1Password) just needs the **`write:public_key`** (`admin:public_key`)
+  scope — no `--scopes` flag is needed, since token scopes come from the PAT.
+  Choosing SSH during login uploads the key directly; the script's follow-up add
+  then reports "already registered" instead of erroring.
 - **Chrome sign-in** and **Trello** — one-time browser steps.
 
 ## SSH key → GitHub → clone
