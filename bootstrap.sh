@@ -314,47 +314,62 @@ fi
 # G. pet — config from dotfiles + token from 1Password, then sync
 # ===========================================================================
 section "pet sync"
+pet_token_missing() {  # true when the config exists and access_token is still blank
+  [[ -f "$PET_CONFIG" ]] && grep -qE '^[[:space:]]*access_token[[:space:]]*=[[:space:]]*""' "$PET_CONFIG"
+}
 if have pet; then
   PET_CONFIG="$HOME/.config/pet/config.toml"
-  if [[ ! -f "$PET_CONFIG" ]]; then
+
+  # 1. Ensure the config exists (download the sanitized one from dotfiles).
+  if [[ ! -f "$PET_CONFIG" && "$DRYRUN" != "1" ]]; then
     info "No pet config — fetching sanitized config from dotfiles: $PET_CONFIG_URL"
-    run mkdir -p "$(dirname "$PET_CONFIG")"
-    run_sh "curl -fsSL '$PET_CONFIG_URL' -o '$PET_CONFIG'" \
+    mkdir -p "$(dirname "$PET_CONFIG")"
+    curl -fsSL "$PET_CONFIG_URL" -o "$PET_CONFIG" \
       || warn "Could not download pet config — run 'pet configure' manually."
-    # The committed config has a blank token; inject the real one from 1Password.
-    # Read the item "$PET_OP_ITEM" if it exists; otherwise create it from a token
-    # you paste in.
-    if [[ "$DRYRUN" == "1" ]]; then
-      echo -e "${YELLOW}[dry-run]${NC} op item get \"$PET_OP_ITEM\" (create if missing) → inject into access_token"
-    elif have op; then
-      if op account list >/dev/null 2>&1; then
-        PET_TOKEN="$(op item get "$PET_OP_ITEM" --fields type=concealed --reveal 2>/dev/null | head -1 || true)"
-        if [[ -z "$PET_TOKEN" ]]; then
-          warn "1Password item '$PET_OP_ITEM' not found — let's create it."
-          read -rsp "Paste the GitHub classic token for pet: " PET_TOKEN; echo
-          if [[ -n "$PET_TOKEN" ]]; then
-            op item create --category password --title "$PET_OP_ITEM" "password=$PET_TOKEN" >/dev/null \
-              && ok "Created 1Password item '$PET_OP_ITEM'." \
-              || warn "Could not create the 1Password item — store the token manually."
-          fi
-        else
-          info "Read pet token from 1Password item '$PET_OP_ITEM'."
-        fi
+  fi
+
+  # 2. Inject the GitHub token from 1Password whenever access_token is still blank.
+  #    This runs on EVERY re-run until the token is present — not only on first
+  #    download — so a config written before 1Password was connected gets fixed.
+  if [[ "$DRYRUN" == "1" ]]; then
+    echo -e "${YELLOW}[dry-run]${NC} if access_token blank: op item get \"$PET_OP_ITEM\" → write into config"
+  elif pet_token_missing; then
+    if have op && op account list >/dev/null 2>&1; then
+      PET_TOKEN="$(op item get "$PET_OP_ITEM" --fields type=concealed --reveal 2>/dev/null | head -1 || true)"
+      if [[ -z "$PET_TOKEN" ]]; then
+        warn "1Password item '$PET_OP_ITEM' not found or empty — let's set it."
+        read -rsp "Paste the GitHub token for pet: " PET_TOKEN; echo
         if [[ -n "$PET_TOKEN" ]]; then
-          esc="${PET_TOKEN//\//\\/}"   # escape '/' for sed
-          sed -i '' -E "s/^([[:space:]]*access_token[[:space:]]*=[[:space:]]*)\"\"/\1\"$esc\"/" "$PET_CONFIG" \
-            || warn "Could not write token into $PET_CONFIG."
-        else
-          warn "No token available — set the access_token in $PET_CONFIG manually."
+          op item create --category password --title "$PET_OP_ITEM" "password=$PET_TOKEN" >/dev/null 2>&1 \
+            && ok "Created 1Password item '$PET_OP_ITEM'." \
+            || warn "Couldn't create the 1Password item — writing the token to the config anyway."
         fi
       else
-        warn "1Password not signed in — set the pet gist token in $PET_CONFIG manually."
+        info "Read pet token from 1Password item '$PET_OP_ITEM'."
       fi
+      if [[ -n "$PET_TOKEN" ]]; then
+        esc="${PET_TOKEN//\//\\/}"   # escape '/' for sed
+        # Fill every blank access_token (Gist backend is the one pet uses).
+        sed -i '' -E "s/^([[:space:]]*access_token[[:space:]]*=[[:space:]]*)\"\"/\1\"$esc\"/" "$PET_CONFIG" \
+          && ok "Wrote the pet token into $PET_CONFIG" \
+          || warn "Could not write token into $PET_CONFIG."
+      else
+        warn "No token available — set access_token in $PET_CONFIG manually."
+      fi
+    else
+      warn "1Password CLI not connected — enable 1Password ▸ Settings ▸ Developer ▸"
+      warn "  'Integrate with 1Password CLI', then re-run. Or set access_token in $PET_CONFIG."
     fi
   fi
-  if [[ "$DRYRUN" == "1" || -f "$PET_CONFIG" ]]; then
+
+  # 3. Sync only when the token is actually present.
+  if [[ "$DRYRUN" == "1" ]]; then
+    echo -e "${YELLOW}[dry-run]${NC} pet sync (if access_token present)"
+  elif [[ -f "$PET_CONFIG" ]] && ! pet_token_missing; then
     info "Syncing pet snippets from GitHub Gist…"
-    run pet sync || warn "pet sync failed — check gist id/token in $PET_CONFIG."
+    pet sync || warn "pet sync failed — check the gist id/token in $PET_CONFIG."
+  else
+    warn "pet access_token still blank — skipping sync. Fill it and re-run (or 'pet configure')."
   fi
 fi
 

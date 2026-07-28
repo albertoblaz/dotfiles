@@ -70,9 +70,11 @@ account, split the prompt back into two.)
 ### pet
 
 If `~/.config/pet/config.toml` is missing, the script downloads the **sanitized**
-config from this repo (`pet/config.toml`), then **injects the real Gist token from
-1Password** before running `pet sync`. The committed config carries a **blank**
-`access_token` — the secret never lives in git.
+config from this repo (`pet/config.toml`). It then **injects the real Gist token
+from 1Password whenever `access_token` is still blank** — on every re-run, not just
+the first download — so a config written before 1Password CLI was connected gets
+fixed on the next run. `pet sync` only runs once the token is present. The committed
+config carries a **blank** `access_token` — the secret never lives in git.
 
 The token is read from the 1Password item named **`pet - Github Classic Token`**
 (override with `PET_OP_ITEM`). If that item doesn't exist, the script **creates it**
