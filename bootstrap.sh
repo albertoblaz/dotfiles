@@ -81,24 +81,35 @@ GG_CLONE_DIR="$HOME/git/golden-gamers"
 PET_CONFIG_URL="${PET_CONFIG_URL:-https://raw.githubusercontent.com/${GITHUB_USER}/dotfiles/main/pet/config.toml}"
 PET_OP_ITEM="${PET_OP_ITEM:-pet - Github Classic Token}"
 
-# Apply the repo's .gitconfig (symlink) early — before we read any email from git.
-if [[ -f "$DOTFILES_DIR/.gitconfig" ]]; then
-  if [[ -L "$HOME/.gitconfig" || ! -e "$HOME/.gitconfig" ]]; then
-    run ln -sfn "$DOTFILES_DIR/.gitconfig" "$HOME/.gitconfig"
-  else
-    warn "Existing ~/.gitconfig (not a symlink) — leaving it; merge $DOTFILES_DIR/.gitconfig manually."
-  fi
+# One email, reused for git commits (.gitconfig), the SSH key comment, and the
+# Chrome/Google sign-in. It's PII, so it's never committed — the repo's .gitconfig
+# ships a WORK_EMAIL_ADDRESS placeholder that we substitute in the LOCAL copy only.
+GOOGLE_EMAIL=""
+read -rp "Your email (git config, SSH key, Google sign-in): " GOOGLE_EMAIL || true
+GIT_EMAIL="$GOOGLE_EMAIL"
+if [[ -z "$GIT_EMAIL" ]]; then
+  # Non-interactive fallback: reuse existing git config, ignoring the placeholder.
+  GIT_EMAIL="$(git config --global user.email 2>/dev/null || true)"
+  [[ "$GIT_EMAIL" == "WORK_EMAIL_ADDRESS" ]] && GIT_EMAIL=""
 fi
 
-# Emails are PII — never hardcoded in this public repo; just prompt for them.
-# The committed .gitconfig ships a WORK_EMAIL_ADDRESS placeholder, so that value
-# is treated as unset for the SSH-key email.
-GIT_EMAIL="$(git config --global user.email 2>/dev/null || true)"
-if [[ -z "$GIT_EMAIL" || "$GIT_EMAIL" == "WORK_EMAIL_ADDRESS" ]]; then
-  read -rp "Email for the new SSH key comment: " GIT_EMAIL || true
+# Apply the repo's .gitconfig locally (COPY, not symlink, so we can fill the email
+# placeholder without writing PII back into the public repo).
+if [[ -f "$DOTFILES_DIR/.gitconfig" ]]; then
+  if [[ -e "$HOME/.gitconfig" && ! -L "$HOME/.gitconfig" ]]; then
+    warn "Existing ~/.gitconfig — leaving it; merge $DOTFILES_DIR/.gitconfig manually."
+  else
+    run rm -f "$HOME/.gitconfig"                       # drop any symlink from older runs
+    run cp "$DOTFILES_DIR/.gitconfig" "$HOME/.gitconfig"
+    if [[ -n "$GOOGLE_EMAIL" ]]; then
+      esc="${GOOGLE_EMAIL//\//\\/}"                    # escape '/' for sed
+      run_sh "sed -i '' 's/WORK_EMAIL_ADDRESS/$esc/' \"$HOME/.gitconfig\""
+      ok "Applied .gitconfig (email: $GOOGLE_EMAIL)"
+    else
+      warn "No email given — ~/.gitconfig keeps the WORK_EMAIL_ADDRESS placeholder; edit it manually."
+    fi
+  fi
 fi
-GOOGLE_EMAIL=""
-read -rp "Google account email for Chrome sign-in: " GOOGLE_EMAIL || true
 
 echo -e "${GREEN}💻 macOS dev bootstrap (personal)${NC}"
 echo "User: $GITHUB_USER   Workspace: $HOME/git"

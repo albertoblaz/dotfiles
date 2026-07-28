@@ -28,7 +28,7 @@ where no formula exists: **Claude Code**, **rtk**, **oh-my-zsh**.
 | Apps (brew casks) | Ghostty, Claude Desktop, Logseq, 1Password, Zed, Google Chrome, Spotify, Docker Desktop, Dropbox, Tailscale, Rectangle, Telegram, WhatsApp, ChatGPT |
 | curl installers | oh-my-zsh, Claude Code, rtk |
 | Runtime manager | mise + a global Node (LTS) and **gws** (`@googleworkspace/cli`) |
-| git config | symlinks the repo's `.gitconfig` to `~/.gitconfig` |
+| git config | copies the repo's `.gitconfig` to `~/.gitconfig`, filling the email placeholder |
 | Apple toolchain | Xcode Command Line Tools, full Xcode (**Mac App Store**), iOS simulator runtime |
 | Snippets | pet config fetched from this repo + token from 1Password + `pet sync` |
 | SSH | new `~/.ssh/id_ed25519`, stored in 1Password **and registered on GitHub** |
@@ -54,9 +54,17 @@ from reopening it.
 ### Chrome sign-in
 
 The script opens the Google sign-in page in Chrome so you can sign in with your
-Google account — the 1Password extension autofills the password. The script
-**prompts** for the email (it is **never** hardcoded in this public repo). Google
-sign-in can't be scripted safely, so this step is a one-time prompt, marker-guarded.
+Google account — the 1Password extension autofills the password. Google sign-in
+can't be scripted safely, so this step is a one-time prompt, marker-guarded.
+
+### Email
+
+The script asks for your email **once** at the start and reuses it for three things:
+the git commit identity (`.gitconfig`), the SSH key comment, and the Chrome/Google
+sign-in. It's PII, so it's **never** committed — the repo's `.gitconfig` keeps a
+`WORK_EMAIL_ADDRESS` placeholder, and the script substitutes your address only in
+the local `~/.gitconfig` copy. (If your git/work email differs from your Google
+account, split the prompt back into two.)
 
 ### pet
 
