@@ -1,22 +1,21 @@
 #!/usr/bin/env bash
 #
-# macOS dev-machine bootstrap
-# ===========================
-# Provisions a fresh Mac with the full Golden Gamers dev toolset. Idempotent:
-# safe to re-run — every step skips whatever is already present.
+# macOS dev-machine bootstrap (personal)
+# ======================================
+# Provisions a fresh Mac with my personal dev toolset. Idempotent: safe to
+# re-run — every step skips whatever is already present.
 #
 # Usage:
-#   ./scripts/bootstrap.sh              # install everything
-#   BOOTSTRAP_DRYRUN=1 ./scripts/bootstrap.sh   # print commands, change nothing
+#   ./bootstrap.sh                       # install everything
+#   BOOTSTRAP_DRYRUN=1 ./bootstrap.sh    # print commands, change nothing
 #
 # Policy: prefer Homebrew wherever a formula/cask exists; use official curl
-# installers only where none does (Claude Code, rtk, oh-my-zsh). Languages are
-# pinned to the repo's version files; Postgres is pinned to prod's major.
+# installers only where none does (Claude Code, rtk, oh-my-zsh).
 
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Colors & logging (matches scripts/ggdev/install.sh style)
+# Colors & logging
 # ---------------------------------------------------------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -31,23 +30,14 @@ error()   { echo -e "${RED}✗${NC} $*" >&2; }
 section() { echo; echo -e "${BLUE}==>${NC} ${1}"; echo "------------------------------------------------------------"; }
 
 # ---------------------------------------------------------------------------
-# Dry-run wrapper: `run <cmd...>` executes, or just prints under BOOTSTRAP_DRYRUN
+# Dry-run wrappers
 # ---------------------------------------------------------------------------
 DRYRUN="${BOOTSTRAP_DRYRUN:-0}"
 run() {
-  if [[ "$DRYRUN" == "1" ]]; then
-    echo -e "${YELLOW}[dry-run]${NC} $*"
-  else
-    "$@"
-  fi
+  if [[ "$DRYRUN" == "1" ]]; then echo -e "${YELLOW}[dry-run]${NC} $*"; else "$@"; fi
 }
-# Same, but for a shell pipeline passed as a single string.
 run_sh() {
-  if [[ "$DRYRUN" == "1" ]]; then
-    echo -e "${YELLOW}[dry-run]${NC} $*"
-  else
-    bash -c "$*"
-  fi
+  if [[ "$DRYRUN" == "1" ]]; then echo -e "${YELLOW}[dry-run]${NC} $*"; else bash -c "$*"; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -68,18 +58,25 @@ fi
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-PG_VERSION=16
-
 GITHUB_USER="albertoblaz"
-REPO_SSH_URL="git@github.com:${GITHUB_USER}/golden-gamers.git"
-CLONE_DIR="$HOME/git/golden-gamers"
-# Ruby/Node are pinned by golden-gamers' own version files (backend/.ruby-version,
-# frontend/.node-version); mise reads them after the repo is cloned below.
+GOOGLE_EMAIL="ablazquezrod@gmail.com"
+MARKER_DIR="$HOME/.config/mac-bootstrap"
+
+# Repos to clone into ~/git. golden-gamers additionally runs its own setup.sh.
+REPOS=(
+  golden-gamers
+  dotfiles
+  logseq-work
+  golden-gamers-methodology
+  logseq-books
+  albertoblaz
+  albertoblaz.github.io
+)
+GG_CLONE_DIR="$HOME/git/golden-gamers"
 
 # Fresh machine fetches the sanitized pet config from the (public) dotfiles repo,
 # then injects the real token from 1Password (never committed). Override via env.
 PET_CONFIG_URL="${PET_CONFIG_URL:-https://raw.githubusercontent.com/${GITHUB_USER}/dotfiles/main/pet/config.toml}"
-# 1Password item holding the GitHub token pet uses for Gist sync.
 PET_OP_ITEM="${PET_OP_ITEM:-pet - Github Classic Token}"
 
 # Email used as the SSH key comment.
@@ -88,9 +85,8 @@ if [[ -z "$GIT_EMAIL" ]]; then
   read -rp "Email for the new SSH key comment: " GIT_EMAIL
 fi
 
-echo -e "${GREEN}🎮 Golden Gamers — macOS dev bootstrap${NC}"
-echo "Clone target: $CLONE_DIR   Postgres: $PG_VERSION"
-echo "Ruby/Node:    installed by the repo's scripts/setup.sh after clone"
+echo -e "${GREEN}💻 macOS dev bootstrap (personal)${NC}"
+echo "User: $GITHUB_USER   Workspace: $HOME/git"
 [[ "$DRYRUN" == "1" ]] && warn "DRY RUN — no changes will be made."
 
 # ===========================================================================
@@ -111,7 +107,6 @@ elif [[ -x /usr/local/bin/brew ]]; then
   eval "$(/usr/local/bin/brew shellenv)"
   BREW_SHELLENV='eval "$(/usr/local/bin/brew shellenv)"'
 fi
-# Persist brew to future shells.
 if [[ -n "${BREW_SHELLENV:-}" ]] && ! grep -qs 'brew shellenv' "$HOME/.zprofile" 2>/dev/null; then
   run_sh "echo '$BREW_SHELLENV' >> \"$HOME/.zprofile\""
 fi
@@ -120,9 +115,7 @@ fi
 # B. Homebrew formulae (CLI tools)
 # ===========================================================================
 section "CLI tools (brew formulae)"
-FORMULAE=(curl vim zsh gh mise pet "postgresql@${PG_VERSION}")
-# 1Password CLI provides `op`.
-FORMULAE+=(1password-cli)
+FORMULAE=(git curl vim zsh gh mise pet 1password-cli)  # 1password-cli provides `op`
 for f in "${FORMULAE[@]}"; do
   if brew_has_formula "$f"; then
     ok "$f already installed"
@@ -146,6 +139,7 @@ CASKS=(
   spotify
   docker           # Docker Desktop
   tailscale
+  rectangle        # window tiling manager
   telegram
   whatsapp
   chatgpt          # ChatGPT for Mac
@@ -159,22 +153,32 @@ for c in "${CASKS[@]}"; do
   fi
 done
 
-# Trello: Atlassian discontinued the desktop app and the Homebrew cask was
-# removed, so install it as a web app. If the cask ever returns, prefer it.
-section "Trello (web app)"
-TRELLO_MARKER="$HOME/.config/gg-bootstrap/trello-webapp-opened"
-if brew info --cask trello >/dev/null 2>&1; then
-  if brew_has_cask trello; then ok "trello already installed"; else
-    info "Installing trello desktop app…"; run brew install --cask trello || warn "Failed to install trello."
-  fi
-elif [[ -f "$TRELLO_MARKER" ]]; then
-  ok "Trello web app already set up (marker present)"
+# ---------------------------------------------------------------------------
+# Trello — no desktop app anymore; install as a Chrome app.
+# ---------------------------------------------------------------------------
+section "Trello (Chrome app)"
+TRELLO_MARKER="$MARKER_DIR/trello-chrome-app"
+if [[ -f "$TRELLO_MARKER" ]]; then
+  ok "Trello Chrome app already set up (marker present)"
 else
-  warn "No Trello desktop app/cask exists anymore — opening the web app to install it."
-  info "In the browser: use 'Add to Dock' (Safari) or Chrome ▸ Install to pin it as an app."
-  run mkdir -p "$(dirname "$TRELLO_MARKER")"
-  run_sh "open 'https://trello.com' || true"
+  info "Opening Trello in Chrome — install it via ⋮ ▸ Cast, save, and share ▸ Install page as app…"
+  run mkdir -p "$MARKER_DIR"
+  run_sh "open -a 'Google Chrome' 'https://trello.com' || true"
   run touch "$TRELLO_MARKER"
+fi
+
+# ---------------------------------------------------------------------------
+# Sign in to Chrome with my Google account (creds in 1Password autofill it).
+# ---------------------------------------------------------------------------
+section "Chrome sign-in"
+CHROME_SIGNIN_MARKER="$MARKER_DIR/chrome-signin-opened"
+if [[ -f "$CHROME_SIGNIN_MARKER" ]]; then
+  ok "Chrome sign-in already prompted (marker present)"
+else
+  info "Sign in to Chrome as $GOOGLE_EMAIL (1Password will autofill the password)."
+  run mkdir -p "$MARKER_DIR"
+  run_sh "open -a 'Google Chrome' 'https://accounts.google.com/ServiceLogin?continue=https://www.google.com' || true"
+  run touch "$CHROME_SIGNIN_MARKER"
 fi
 
 # ===========================================================================
@@ -205,13 +209,12 @@ else
 fi
 
 # ===========================================================================
-# E. mise setup (languages installed later, from the golden-gamers clone)
+# E. mise (runtime manager) — the tool + shell activation
 # ===========================================================================
-section "mise setup"
+section "mise"
 if ! have mise; then
   error "mise not found on PATH after install — skipping mise setup."
 else
-  # Activate mise for this shell so later `mise install`/`use` work now.
   if [[ "$DRYRUN" != "1" ]]; then eval "$(mise activate bash)"; fi
   # Persist activation to shells (map rc file → shell name explicitly).
   add_mise_activate() {
@@ -223,31 +226,31 @@ else
   }
   add_mise_activate "$HOME/.zshrc" zsh
   add_mise_activate "$HOME/.bashrc" bash
-  ok "mise ready — golden-gamers' scripts/setup.sh installs the pinned Ruby/Node."
+  ok "mise ready"
 fi
 
-# ===========================================================================
-# F. PostgreSQL (pinned to prod's major)
-# ===========================================================================
-section "PostgreSQL ${PG_VERSION}"
-if brew_has_formula "postgresql@${PG_VERSION}"; then
-  ok "postgresql@${PG_VERSION} already installed"
-  run brew services start "postgresql@${PG_VERSION}" || true
-else
-  info "Installing postgresql@${PG_VERSION}…"
-  run brew install "postgresql@${PG_VERSION}"
-  run brew services start "postgresql@${PG_VERSION}"
-fi
-# Put this Postgres' bin on PATH (keg-only formula).
-if have brew; then
-  PG_BIN="$(brew --prefix)/opt/postgresql@${PG_VERSION}/bin"
-  if [[ -d "$PG_BIN" ]] && ! grep -qs "postgresql@${PG_VERSION}/bin" "$HOME/.zprofile" 2>/dev/null; then
-    run_sh "echo 'export PATH=\"$PG_BIN:\$PATH\"' >> \"$HOME/.zprofile\""
+# ---------------------------------------------------------------------------
+# Global Node (for personal CLI tools) + gws (@googleworkspace/cli).
+# Per-project Node stays pinned by each repo's version file.
+# ---------------------------------------------------------------------------
+section "Global Node + gws"
+if have mise; then
+  run mise use -g node@lts
+  if [[ "$DRYRUN" == "1" ]]; then
+    echo -e "${YELLOW}[dry-run]${NC} mise exec -- npm install -g @googleworkspace/cli"
+  elif mise exec -- npm ls -g @googleworkspace/cli >/dev/null 2>&1; then
+    ok "gws already installed"
+  else
+    info "Installing gws (@googleworkspace/cli)…"
+    run_sh "mise exec -- npm install -g @googleworkspace/cli" \
+      || warn "Failed to install gws — install it manually: npm install -g @googleworkspace/cli"
   fi
+else
+  warn "mise unavailable — skipping global Node + gws."
 fi
 
 # ===========================================================================
-# G. Xcode + iOS simulator
+# F. Xcode + iOS simulator
 # ===========================================================================
 section "Xcode Command Line Tools"
 if xcode-select -p >/dev/null 2>&1; then
@@ -266,7 +269,6 @@ else
   run_sh "open 'macappstore://apps.apple.com/app/xcode/id497799835' || open 'https://apps.apple.com/app/xcode/id497799835' || true"
   warn "After Xcode finishes installing, re-run this script to accept the license and fetch the iOS simulator."
 fi
-# License + simulator runtime (only once Xcode is actually installed).
 if ls -d /Applications/Xcode*.app >/dev/null 2>&1; then
   run sudo xcodebuild -license accept || true
   info "Downloading the iOS simulator runtime…"
@@ -274,7 +276,7 @@ if ls -d /Applications/Xcode*.app >/dev/null 2>&1; then
 fi
 
 # ===========================================================================
-# H. pet sync (pull snippets from GitHub Gist)
+# G. pet — config from dotfiles + token from 1Password, then sync
 # ===========================================================================
 section "pet sync"
 if have pet; then
@@ -285,13 +287,12 @@ if have pet; then
     run_sh "curl -fsSL '$PET_CONFIG_URL' -o '$PET_CONFIG'" \
       || warn "Could not download pet config — run 'pet configure' manually."
     # The committed config has a blank token; inject the real one from 1Password.
-    # Read the item "$PET_OP_ITEM" if it exists; otherwise create it from a
-    # token you paste in.
+    # Read the item "$PET_OP_ITEM" if it exists; otherwise create it from a token
+    # you paste in.
     if [[ "$DRYRUN" == "1" ]]; then
       echo -e "${YELLOW}[dry-run]${NC} op item get \"$PET_OP_ITEM\" (create if missing) → inject into access_token"
     elif have op; then
       if op account list >/dev/null 2>&1; then
-        # Try to read the token from the existing item (any concealed field).
         PET_TOKEN="$(op item get "$PET_OP_ITEM" --fields type=concealed --reveal 2>/dev/null | head -1 || true)"
         if [[ -z "$PET_TOKEN" ]]; then
           warn "1Password item '$PET_OP_ITEM' not found — let's create it."
@@ -323,7 +324,7 @@ if have pet; then
 fi
 
 # ===========================================================================
-# I. SSH key + store in 1Password
+# H. SSH key + store in 1Password + register on GitHub
 # ===========================================================================
 section "SSH key"
 SSH_KEY="$HOME/.ssh/id_ed25519"
@@ -336,7 +337,6 @@ else
   run ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$SSH_KEY" -N ""
   run chmod 600 "$SSH_KEY"
   run chmod 644 "${SSH_KEY}.pub"
-  # Configure the agent + Keychain.
   if ! grep -qs "id_ed25519" "$HOME/.ssh/config" 2>/dev/null; then
     run_sh "printf 'Host *\n  AddKeysToAgent yes\n  UseKeychain yes\n  IdentityFile %s\n' '$SSH_KEY' >> \"$HOME/.ssh/config\""
   fi
@@ -361,17 +361,14 @@ else
   warn "1Password CLI (op) not found — cannot store the SSH key automatically."
 fi
 
-# ---------------------------------------------------------------------------
-# Register the public key on GitHub (needed before the SSH clone below).
-# ---------------------------------------------------------------------------
 section "Add SSH key to GitHub"
 if ! have gh; then
   warn "gh not found — skipping GitHub key upload."
 elif [[ "$DRYRUN" != "1" ]] && ! gh auth status >/dev/null 2>&1; then
   warn "gh is not authenticated — run 'gh auth login', then re-run to upload the key."
 else
-  # `gh ssh-key add` needs the write:public_key scope; the default login scopes
-  # (repo, read:org, project) don't include it. Refresh if it's missing.
+  # `gh ssh-key add` needs the write:public_key scope; default login scopes don't
+  # include it. Refresh if it's missing.
   if [[ "$DRYRUN" != "1" ]] && ! gh auth status 2>&1 | grep -qiE 'public_key'; then
     warn "gh token lacks the write:public_key scope — requesting it (opens a browser)…"
     run gh auth refresh -h github.com -s write:public_key || warn "Scope refresh failed; upload the key manually with 'gh ssh-key add'."
@@ -387,43 +384,44 @@ else
 fi
 
 # ===========================================================================
-# J. ~/git workspace + clone the repo
+# I. ~/git workspace + clone repos
 # ===========================================================================
 section "~/git workspace"
 run mkdir -p "$HOME/git"
 ok "$HOME/git ready"
 
-section "Clone golden-gamers"
-if [[ -d "$CLONE_DIR/.git" ]]; then
-  ok "Repo already cloned at $CLONE_DIR"
-else
-  # Pre-trust github.com so the first SSH clone doesn't hang on the host-key
-  # prompt (critical for an unattended fresh-Mac run).
-  if [[ "$DRYRUN" == "1" ]] || ! ssh-keygen -F github.com >/dev/null 2>&1; then
-    run_sh "ssh-keyscan -t ed25519,rsa github.com >> \"$HOME/.ssh/known_hosts\" 2>/dev/null" || true
-  fi
-  info "Cloning $REPO_SSH_URL → $CLONE_DIR (uses the SSH key just registered)…"
-  run_sh "git clone '$REPO_SSH_URL' '$CLONE_DIR'" \
-    || warn "Clone failed — confirm the SSH key is active on GitHub, then: git clone $REPO_SSH_URL $CLONE_DIR"
+section "Clone repos"
+# Pre-trust github.com so the first SSH clone doesn't hang on the host-key prompt.
+if [[ "$DRYRUN" == "1" ]] || ! ssh-keygen -F github.com >/dev/null 2>&1; then
+  run_sh "ssh-keyscan -t ed25519,rsa github.com >> \"$HOME/.ssh/known_hosts\" 2>/dev/null" || true
 fi
+for repo in "${REPOS[@]}"; do
+  dest="$HOME/git/$repo"
+  if [[ -d "$dest/.git" ]]; then
+    ok "$repo already cloned"
+  else
+    info "Cloning $repo…"
+    run_sh "git clone 'git@github.com:${GITHUB_USER}/${repo}.git' '$dest'" \
+      || warn "Clone failed for $repo — confirm the SSH key is active on GitHub."
+  fi
+done
 
-# Hand off project setup to the repo's own script. Everything golden-gamers
-# specific — the pinned Ruby/Node install and the backend/frontend deps — lives
-# in scripts/setup.sh inside the repo, not here.
-section "Project setup (golden-gamers/scripts/setup.sh)"
-if [[ -x "$CLONE_DIR/scripts/setup.sh" ]]; then
-  run_sh "'$CLONE_DIR/scripts/setup.sh'" \
-    || warn "setup.sh failed — run it manually: $CLONE_DIR/scripts/setup.sh"
-elif [[ -d "$CLONE_DIR" ]]; then
-  warn "Clone present but scripts/setup.sh not found — run project setup manually."
+# golden-gamers project setup lives in the repo itself (pinned Ruby/Node,
+# Postgres, deps, first-time DB) — hand off to it.
+section "golden-gamers project setup"
+if [[ -x "$GG_CLONE_DIR/scripts/setup.sh" ]]; then
+  run_sh "'$GG_CLONE_DIR/scripts/setup.sh'" \
+    || warn "setup.sh failed — run it manually: $GG_CLONE_DIR/scripts/setup.sh"
+elif [[ -d "$GG_CLONE_DIR" ]]; then
+  warn "golden-gamers cloned but scripts/setup.sh not found — run project setup manually."
 else
-  warn "Repo not cloned — skipping project setup."
+  warn "golden-gamers not cloned — skipping project setup."
 fi
 
 # ===========================================================================
 echo
 ok "Bootstrap complete."
 warn "Some steps may need a human: Xcode (App Store / Apple ID), 1Password (unlock/signin),"
-warn "gh (auth login + write:public_key scope for the SSH key), Trello (Add to Dock in browser)."
-info "Ruby/Node + project deps were handled by golden-gamers/scripts/setup.sh."
+warn "gh (auth login + write:public_key scope), Chrome sign-in, Trello (install as Chrome app)."
+info "golden-gamers deps + database were handled by its own scripts/setup.sh."
 info "Open a new terminal so PATH / shell changes take effect."
