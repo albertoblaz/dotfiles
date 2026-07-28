@@ -31,7 +31,7 @@ where no formula exists: **Claude Code**, **rtk**, **oh-my-zsh**.
 | git config | copies the repo's `.gitconfig` to `~/.gitconfig`, filling the email placeholder |
 | Apple toolchain | Xcode Command Line Tools, full Xcode (**Mac App Store**), iOS simulator runtime |
 | Snippets | pet config fetched from this repo + token from 1Password + `pet sync` |
-| SSH | new `~/.ssh/id_ed25519`, stored in 1Password **and registered on GitHub** |
+| SSH | key **generated in 1Password** as an SSH Key item, pulled to `~/.ssh`, **registered on GitHub** |
 | Workspace | `~/git/` + clones my repos (see below) |
 
 Formulae and casks each install in a **single `brew` call** so bottles download in
@@ -108,12 +108,20 @@ you what still needs you:
 
 ## SSH key → GitHub → clone
 
-1. Generates `~/.ssh/id_ed25519` **only if none exists** (never overwrites), sets
-   perms, wires it into the ssh-agent + macOS Keychain.
-2. Uploads the private key to **1Password** as a document.
-3. Registers the **public** key on **GitHub** via `gh ssh-key add`.
+1. **Generates the key inside 1Password** as a proper **SSH Key** item
+   (`op item create --category ssh`) — the op CLI can't *import* an existing key as
+   an SSH Key item (desktop-app only), so generating it there is the way to get the
+   right item type. Idempotent: skips if the item already exists. Set `OP_VAULT=…`
+   if your keys don't live in the `Private` vault.
+2. Pulls the private + public key down to `~/.ssh/id_ed25519(.pub)` via
+   `op read "op://…/private key?ssh-format=openssh"`, wires it into the ssh-agent +
+   Keychain. If `op` isn't available it **falls back to local `ssh-keygen`** so the
+   clone still works (that key won't be a 1Password SSH Key item — import it via the
+   desktop app if you want that).
+3. Registers the **public** key on **GitHub** via `gh ssh-key add` (treats
+   "already in use" as success).
 4. Pre-trusts `github.com` (`ssh-keyscan`) so the first SSH clone doesn't hang, then
-   clones the repos over SSH.
+   clones the repos over SSH — **skipping any repo already present in `~/git/`**.
 
 ## Security note — pet token
 

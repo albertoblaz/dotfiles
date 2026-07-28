@@ -81,23 +81,20 @@ GG_CLONE_DIR="$HOME/git/golden-gamers"
 PET_CONFIG_URL="${PET_CONFIG_URL:-https://raw.githubusercontent.com/${GITHUB_USER}/dotfiles/main/pet/config.toml}"
 PET_OP_ITEM="${PET_OP_ITEM:-pet - Github Classic Token}"
 
-# One email, reused for git commits (.gitconfig), the SSH key comment, and the
-# Chrome/Google sign-in. It's PII, so it's never committed — the repo's .gitconfig
-# ships a WORK_EMAIL_ADDRESS placeholder that we substitute in the LOCAL copy only.
+# One email, reused for the git commit identity (.gitconfig) and the Chrome/Google
+# sign-in. It's PII, so it's never committed — the repo's .gitconfig ships a
+# WORK_EMAIL_ADDRESS placeholder that we substitute in the LOCAL copy only.
 GOOGLE_EMAIL=""
-read -rp "Your email (git config, SSH key, Google sign-in): " GOOGLE_EMAIL || true
-GIT_EMAIL="$GOOGLE_EMAIL"
-if [[ -z "$GIT_EMAIL" ]]; then
-  # Non-interactive fallback: reuse existing git config, ignoring the placeholder.
-  GIT_EMAIL="$(git config --global user.email 2>/dev/null || true)"
-  [[ "$GIT_EMAIL" == "WORK_EMAIL_ADDRESS" ]] && GIT_EMAIL=""
-fi
+read -rp "Your email (git config, Google sign-in): " GOOGLE_EMAIL || true
 
 # Apply the repo's .gitconfig locally (COPY, not symlink, so we can fill the email
 # placeholder without writing PII back into the public repo).
 if [[ -f "$DOTFILES_DIR/.gitconfig" ]]; then
-  if [[ -e "$HOME/.gitconfig" && ! -L "$HOME/.gitconfig" ]]; then
-    warn "Existing ~/.gitconfig — leaving it; merge $DOTFILES_DIR/.gitconfig manually."
+  if [[ -f "$HOME/.gitconfig" ]] && grep -qs 'gst = git status' "$HOME/.gitconfig"; then
+    # A distinctive alias from our .gitconfig → it's already applied. Idempotent.
+    ok "~/.gitconfig already applied"
+  elif [[ -e "$HOME/.gitconfig" && ! -L "$HOME/.gitconfig" ]]; then
+    warn "Existing ~/.gitconfig (not ours) — leaving it; merge $DOTFILES_DIR/.gitconfig manually."
   else
     run rm -f "$HOME/.gitconfig"                       # drop any symlink from older runs
     run cp "$DOTFILES_DIR/.gitconfig" "$HOME/.gitconfig"
@@ -374,41 +371,71 @@ if have pet; then
 fi
 
 # ===========================================================================
-# H. SSH key + store in 1Password + register on GitHub
+# H. SSH key (generated in 1Password as an SSH Key item) + register on GitHub
 # ===========================================================================
-section "SSH key"
+# The op CLI can't IMPORT an existing private key as an "SSH Key" item (that's
+# desktop-app only), so to get a proper SSH Key item we GENERATE the key inside
+# 1Password and pull it down to ~/.ssh. Falls back to local ssh-keygen if op
+# isn't available so the clone step still has a key. Override the vault with
+# OP_VAULT=... if your keys don't live in "Private".
+section "SSH key (1Password)"
 SSH_KEY="$HOME/.ssh/id_ed25519"
+OP_VAULT="${OP_VAULT:-Private}"
+SSH_ITEM_TITLE="${SSH_ITEM_TITLE:-SSH: $(hostname -s)}"
 run mkdir -p "$HOME/.ssh"
 run chmod 700 "$HOME/.ssh"
-if [[ -f "$SSH_KEY" ]]; then
-  ok "SSH key already exists — not overwriting ($SSH_KEY)"
-else
-  info "Generating a new ed25519 SSH key…"
-  run ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$SSH_KEY" -N ""
-  run chmod 600 "$SSH_KEY"
-  run chmod 644 "${SSH_KEY}.pub"
-  if ! grep -qs "id_ed25519" "$HOME/.ssh/config" 2>/dev/null; then
+
+ensure_ssh_config() {  # idempotent ~/.ssh/config entry
+  if [[ ! -f "$HOME/.ssh/config" ]] || ! grep -qs 'id_ed25519' "$HOME/.ssh/config" 2>/dev/null; then
     run_sh "printf 'Host *\n  AddKeysToAgent yes\n  UseKeychain yes\n  IdentityFile %s\n' '$SSH_KEY' >> \"$HOME/.ssh/config\""
   fi
-  run ssh-add --apple-use-keychain "$SSH_KEY" || true
-fi
+}
 
-section "Store SSH key in 1Password"
-if have op; then
-  if [[ "$DRYRUN" != "1" ]] && ! op account list >/dev/null 2>&1; then
-    warn "1Password CLI not signed in — run 'op signin' (or enable desktop app integration), then re-run."
+if [[ "$DRYRUN" == "1" ]]; then
+  echo -e "${YELLOW}[dry-run]${NC} ensure 1Password SSH Key item '$SSH_ITEM_TITLE' (generate if absent),"
+  echo -e "${YELLOW}[dry-run]${NC} then op read private/public → $SSH_KEY(.pub); fall back to ssh-keygen if op unavailable"
+elif have op && op account list >/dev/null 2>&1; then
+  # 1. Ensure the SSH Key item exists in 1Password (idempotent — generate once).
+  if op item get "$SSH_ITEM_TITLE" --vault "$OP_VAULT" >/dev/null 2>&1; then
+    ok "1Password SSH Key item '$SSH_ITEM_TITLE' already exists"
   else
-    TITLE="SSH: $(hostname -s) id_ed25519"
-    if [[ "$DRYRUN" != "1" ]] && op document get "$TITLE" >/dev/null 2>&1; then
-      ok "SSH key already stored in 1Password ($TITLE)"
+    info "Generating a new SSH Key in 1Password ('$SSH_ITEM_TITLE', vault $OP_VAULT)…"
+    op item create --category ssh --title "$SSH_ITEM_TITLE" --vault "$OP_VAULT" >/dev/null \
+      && ok "Created 1Password SSH Key item" \
+      || warn "Could not create the SSH Key item in 1Password."
+  fi
+  # 2. Materialize the key locally from 1Password (idempotent — only if missing).
+  if [[ ! -f "$SSH_KEY" ]]; then
+    if op read "op://$OP_VAULT/$SSH_ITEM_TITLE/private key?ssh-format=openssh" > "$SSH_KEY" 2>/dev/null && [[ -s "$SSH_KEY" ]]; then
+      chmod 600 "$SSH_KEY"; ok "Wrote private key → $SSH_KEY"
     else
-      info "Uploading private key to 1Password as a document…"
-      run op document create "$SSH_KEY" --title "$TITLE" \
-        || warn "Could not upload to 1Password — store $SSH_KEY manually."
+      rm -f "$SSH_KEY"; warn "Could not read the private key from 1Password (vault '$OP_VAULT'?)."
+    fi
+  else
+    ok "Private key already present at $SSH_KEY"
+  fi
+  if [[ ! -f "$SSH_KEY.pub" ]]; then
+    if op read "op://$OP_VAULT/$SSH_ITEM_TITLE/public key" > "$SSH_KEY.pub" 2>/dev/null && [[ -s "$SSH_KEY.pub" ]]; then
+      chmod 644 "$SSH_KEY.pub"; ok "Wrote public key → $SSH_KEY.pub"
+    else
+      rm -f "$SSH_KEY.pub"; warn "Could not read the public key from 1Password."
     fi
   fi
+  ensure_ssh_config
+  [[ -f "$SSH_KEY" ]] && run ssh-add --apple-use-keychain "$SSH_KEY" 2>/dev/null || true
 else
-  warn "1Password CLI (op) not found — cannot store the SSH key automatically."
+  # Fallback: no op — generate locally so the clone still works. (Won't be an
+  # SSH Key item in 1Password; import it via the desktop app if you want that.)
+  warn "1Password CLI not available/connected — generating the key locally instead."
+  warn "  (Enable 1Password ▸ Settings ▸ Developer ▸ Integrate with 1Password CLI to store it as an SSH Key item.)"
+  if [[ -f "$SSH_KEY" ]]; then
+    ok "SSH key already exists — not overwriting ($SSH_KEY)"
+  else
+    run ssh-keygen -t ed25519 -C "$GOOGLE_EMAIL" -f "$SSH_KEY" -N ""
+    run chmod 600 "$SSH_KEY"; run chmod 644 "${SSH_KEY}.pub"
+  fi
+  ensure_ssh_config
+  [[ -f "$SSH_KEY" ]] && run ssh-add --apple-use-keychain "$SSH_KEY" 2>/dev/null || true
 fi
 
 section "Add SSH key to GitHub"
@@ -428,6 +455,8 @@ else
   fi
   if ! gh auth status >/dev/null 2>&1; then
     warn "gh still not authenticated — add ${SSH_KEY}.pub manually at https://github.com/settings/keys."
+  elif [[ ! -f "${SSH_KEY}.pub" ]]; then
+    warn "No public key at ${SSH_KEY}.pub — skipping GitHub upload (SSH key setup didn't complete)."
   else
     # Ensure the key is registered. The SSH-protocol login may already have added
     # it; a repeat add returns "already in use", which we treat as success.
@@ -462,6 +491,10 @@ for repo in "${REPOS[@]}"; do
   dest="$HOME/git/$repo"
   if [[ -d "$dest/.git" ]]; then
     ok "$repo already cloned"
+  elif [[ -d "$dest" ]]; then
+    # Directory exists but isn't a git repo — don't clone into it (git would
+    # refuse a non-empty target anyway). Skip and let the user sort it out.
+    warn "$repo: $dest exists but isn't a git repo — skipping clone."
   elif [[ "$DRYRUN" == "1" ]]; then
     echo -e "${YELLOW}[dry-run]${NC} git clone git@github.com:${GITHUB_USER}/${repo}.git $dest (parallel)"
   else
