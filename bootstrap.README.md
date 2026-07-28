@@ -25,13 +25,17 @@ where no formula exists: **Claude Code**, **rtk**, **oh-my-zsh**.
 | Category | Tools |
 |----------|-------|
 | CLI (brew formulae) | git, curl, vim, zsh, gh, mise, pet, `1password-cli` (`op`) |
-| Apps (brew casks) | Ghostty, Claude Desktop, Logseq, 1Password, Zed, Google Chrome, Spotify, Docker Desktop, Tailscale, Rectangle, Telegram, WhatsApp, ChatGPT |
+| Apps (brew casks) | Ghostty, Claude Desktop, Logseq, 1Password, Zed, Google Chrome, Spotify, Docker Desktop, Dropbox, Tailscale, Rectangle, Telegram, WhatsApp, ChatGPT |
 | curl installers | oh-my-zsh, Claude Code, rtk |
 | Runtime manager | mise + a global Node (LTS) and **gws** (`@googleworkspace/cli`) |
+| git config | symlinks the repo's `.gitconfig` to `~/.gitconfig` |
 | Apple toolchain | Xcode Command Line Tools, full Xcode (**Mac App Store**), iOS simulator runtime |
 | Snippets | pet config fetched from this repo + token from 1Password + `pet sync` |
 | SSH | new `~/.ssh/id_ed25519`, stored in 1Password **and registered on GitHub** |
 | Workspace | `~/git/` + clones my repos (see below) |
+
+Formulae and casks each install in a **single `brew` call** so bottles download in
+parallel, and the repo clones run **concurrently** — the slow steps overlap.
 
 ### Xcode
 
@@ -49,9 +53,11 @@ from reopening it.
 
 ### Chrome sign-in
 
-The script opens the Google sign-in page in Chrome so you can sign in as
-`ablazquezrod@gmail.com` — the 1Password extension autofills the password. (Google
-sign-in can't be scripted safely, so this step is a one-time prompt, marker-guarded.)
+The script opens the Google sign-in page in Chrome so you can sign in with your
+Google account — the 1Password extension autofills the password. The email is read
+from the `GOOGLE_EMAIL` env var (e.g. a CI repo secret) or prompted for — it is
+**never** hardcoded in this public repo. Google sign-in can't be scripted safely,
+so this step is a one-time prompt, marker-guarded.
 
 ### pet
 
@@ -67,12 +73,10 @@ from a token you paste in. The committed config already has the real `gist_id`
 
 ## Repos cloned into ~/git
 
-`golden-gamers`, `dotfiles`, `logseq-work`, `golden-gamers-methodology`,
-`logseq-books`, `albertoblaz`, `albertoblaz.github.io`.
+`albertoblaz`, `albertoblaz.github.io`, `dotfiles`, `golden-gamers`,
+`golden-gamers-methodology`, `logseq-books`, `logseq-work`.
 
-**golden-gamers** additionally runs its own **`scripts/setup.sh`** after cloning —
-that's where the project-specific work lives (pinned Ruby/Node, PostgreSQL, backend/
-frontend deps, first-time DB). Nothing golden-gamers-specific is duplicated here.
+**golden-gamers** additionally runs its own **`scripts/setup.sh`** after cloning.
 
 ## Steps that need a human (interactive)
 
@@ -84,7 +88,9 @@ you what still needs you:
   integration or `op signin`).
 - **GitHub SSH key** — `gh` must be authenticated (`gh auth login`) **with the
   `write:public_key` scope**. The script runs `gh auth refresh -h github.com -s
-  write:public_key` (opens a browser) when the scope is missing.
+  write:public_key` (opens a browser) when the scope is missing, then **re-checks**:
+  if the scope is still absent it **warns and skips** the upload (pointing you to
+  `github.com/settings/keys`) rather than failing silently.
 - **Chrome sign-in** and **Trello** — one-time browser steps.
 
 ## SSH key → GitHub → clone

@@ -59,18 +59,20 @@ fi
 # Config
 # ---------------------------------------------------------------------------
 GITHUB_USER="albertoblaz"
-GOOGLE_EMAIL="ablazquezrod@gmail.com"
 MARKER_DIR="$HOME/.config/mac-bootstrap"
+# Directory this script lives in (= the dotfiles repo) — source of .gitconfig etc.
+DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Repos to clone into ~/git. golden-gamers additionally runs its own setup.sh.
+# Repos to clone into ~/git (alphabetical). golden-gamers additionally runs its
+# own scripts/setup.sh.
 REPOS=(
-  golden-gamers
-  dotfiles
-  logseq-work
-  golden-gamers-methodology
-  logseq-books
   albertoblaz
   albertoblaz.github.io
+  dotfiles
+  golden-gamers
+  golden-gamers-methodology
+  logseq-books
+  logseq-work
 )
 GG_CLONE_DIR="$HOME/git/golden-gamers"
 
@@ -79,10 +81,25 @@ GG_CLONE_DIR="$HOME/git/golden-gamers"
 PET_CONFIG_URL="${PET_CONFIG_URL:-https://raw.githubusercontent.com/${GITHUB_USER}/dotfiles/main/pet/config.toml}"
 PET_OP_ITEM="${PET_OP_ITEM:-pet - Github Classic Token}"
 
-# Email used as the SSH key comment.
-GIT_EMAIL="$(git config --global user.email 2>/dev/null || true)"
-if [[ -z "$GIT_EMAIL" ]]; then
-  read -rp "Email for the new SSH key comment: " GIT_EMAIL
+# Apply the repo's .gitconfig (symlink) early — before we read any email from git.
+if [[ -f "$DOTFILES_DIR/.gitconfig" ]]; then
+  if [[ -L "$HOME/.gitconfig" || ! -e "$HOME/.gitconfig" ]]; then
+    run ln -sfn "$DOTFILES_DIR/.gitconfig" "$HOME/.gitconfig"
+  else
+    warn "Existing ~/.gitconfig (not a symlink) — leaving it; merge $DOTFILES_DIR/.gitconfig manually."
+  fi
+fi
+
+# Emails are PII — never hardcoded in this public repo. Supply via env
+# (e.g. a CI repo secret) or get prompted. The committed .gitconfig ships a
+# WORK_EMAIL_ADDRESS placeholder, so a placeholder value is treated as unset.
+GIT_EMAIL="${GIT_EMAIL:-$(git config --global user.email 2>/dev/null || true)}"
+if [[ -z "$GIT_EMAIL" || "$GIT_EMAIL" == "WORK_EMAIL_ADDRESS" ]]; then
+  read -rp "Email for the new SSH key comment: " GIT_EMAIL || true
+fi
+GOOGLE_EMAIL="${GOOGLE_EMAIL:-}"
+if [[ -z "$GOOGLE_EMAIL" ]]; then
+  read -rp "Google account email for Chrome sign-in: " GOOGLE_EMAIL || true
 fi
 
 echo -e "${GREEN}💻 macOS dev bootstrap (personal)${NC}"
@@ -116,14 +133,10 @@ fi
 # ===========================================================================
 section "CLI tools (brew formulae)"
 FORMULAE=(git curl vim zsh gh mise pet 1password-cli)  # 1password-cli provides `op`
-for f in "${FORMULAE[@]}"; do
-  if brew_has_formula "$f"; then
-    ok "$f already installed"
-  else
-    info "Installing $f…"
-    run brew install "$f" || warn "Failed to install $f — continuing."
-  fi
-done
+# One `brew install` call installs them together (brew fetches bottles in
+# parallel); already-installed formulae are skipped.
+info "Installing: ${FORMULAE[*]}"
+run brew install "${FORMULAE[@]}" || warn "One or more formulae failed — check output above."
 
 # ===========================================================================
 # C. Homebrew casks (GUI apps)
@@ -138,20 +151,17 @@ CASKS=(
   google-chrome
   spotify
   docker           # Docker Desktop
+  dropbox
   tailscale
   rectangle        # window tiling manager
   telegram
   whatsapp
   chatgpt          # ChatGPT for Mac
 )
-for c in "${CASKS[@]}"; do
-  if brew_has_cask "$c"; then
-    ok "$c already installed"
-  else
-    info "Installing $c…"
-    run brew install --cask "$c" || warn "Failed to install $c — continuing."
-  fi
-done
+# One `brew install --cask` call installs them together (parallel fetch);
+# already-installed casks are skipped.
+info "Installing: ${CASKS[*]}"
+run brew install --cask "${CASKS[@]}" || warn "One or more casks failed — check output above."
 
 # ---------------------------------------------------------------------------
 # Trello — no desktop app anymore; install as a Chrome app.
@@ -368,18 +378,30 @@ elif [[ "$DRYRUN" != "1" ]] && ! gh auth status >/dev/null 2>&1; then
   warn "gh is not authenticated — run 'gh auth login', then re-run to upload the key."
 else
   # `gh ssh-key add` needs the write:public_key scope; default login scopes don't
-  # include it. Refresh if it's missing.
-  if [[ "$DRYRUN" != "1" ]] && ! gh auth status 2>&1 | grep -qiE 'public_key'; then
-    warn "gh token lacks the write:public_key scope — requesting it (opens a browser)…"
-    run gh auth refresh -h github.com -s write:public_key || warn "Scope refresh failed; upload the key manually with 'gh ssh-key add'."
+  # include it. Refresh if it's missing, then verify — if the scope still isn't
+  # present the upload cannot run, so warn loudly and skip rather than fail silently.
+  scope_ok=1
+  if [[ "$DRYRUN" != "1" ]]; then
+    if ! gh auth status 2>&1 | grep -qiE 'public_key'; then
+      warn "gh token lacks the write:public_key scope — requesting it (opens a browser)…"
+      gh auth refresh -h github.com -s write:public_key || true
+      # Re-check: the refresh may have been cancelled or failed.
+      gh auth status 2>&1 | grep -qiE 'public_key' || scope_ok=0
+    fi
   fi
-  KEY_TITLE="$(hostname -s) (bootstrap)"
-  if [[ "$DRYRUN" != "1" ]] && gh ssh-key list 2>/dev/null | grep -qF "$(awk '{print $2}' "${SSH_KEY}.pub" 2>/dev/null)"; then
-    ok "This key is already registered on GitHub"
+  if [[ "$scope_ok" == "0" ]]; then
+    warn "⚠ Cannot register the SSH key on GitHub: the write:public_key scope is still missing."
+    warn "  Run 'gh auth refresh -h github.com -s write:public_key' and re-run, or add"
+    warn "  ${SSH_KEY}.pub manually at https://github.com/settings/keys."
   else
-    info "Uploading public key to GitHub…"
-    run gh ssh-key add "${SSH_KEY}.pub" --title "$KEY_TITLE" \
-      || warn "Could not add key to GitHub — add ${SSH_KEY}.pub manually at github.com/settings/keys."
+    KEY_TITLE="$(hostname -s) (bootstrap)"
+    if [[ "$DRYRUN" != "1" ]] && gh ssh-key list 2>/dev/null | grep -qF "$(awk '{print $2}' "${SSH_KEY}.pub" 2>/dev/null)"; then
+      ok "This key is already registered on GitHub"
+    else
+      info "Uploading public key to GitHub…"
+      run gh ssh-key add "${SSH_KEY}.pub" --title "$KEY_TITLE" \
+        || warn "Could not add key to GitHub — add ${SSH_KEY}.pub manually at github.com/settings/keys."
+    fi
   fi
 fi
 
@@ -395,16 +417,23 @@ section "Clone repos"
 if [[ "$DRYRUN" == "1" ]] || ! ssh-keygen -F github.com >/dev/null 2>&1; then
   run_sh "ssh-keyscan -t ed25519,rsa github.com >> \"$HOME/.ssh/known_hosts\" 2>/dev/null" || true
 fi
+# Clone the missing repos in parallel, then wait for all of them.
+clone_pids=()
 for repo in "${REPOS[@]}"; do
   dest="$HOME/git/$repo"
   if [[ -d "$dest/.git" ]]; then
     ok "$repo already cloned"
+  elif [[ "$DRYRUN" == "1" ]]; then
+    echo -e "${YELLOW}[dry-run]${NC} git clone git@github.com:${GITHUB_USER}/${repo}.git $dest (parallel)"
   else
     info "Cloning $repo…"
-    run_sh "git clone 'git@github.com:${GITHUB_USER}/${repo}.git' '$dest'" \
-      || warn "Clone failed for $repo — confirm the SSH key is active on GitHub."
+    ( git clone "git@github.com:${GITHUB_USER}/${repo}.git" "$dest" >/dev/null 2>&1 \
+        && ok "cloned $repo" \
+        || warn "Clone failed for $repo — confirm the SSH key is active on GitHub." ) &
+    clone_pids+=("$!")
   fi
 done
+[[ ${#clone_pids[@]} -gt 0 ]] && wait "${clone_pids[@]}" 2>/dev/null || true
 
 # golden-gamers project setup lives in the repo itself (pinned Ruby/Node,
 # Postgres, deps, first-time DB) — hand off to it.
