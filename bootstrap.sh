@@ -224,7 +224,7 @@ if have rtk || [[ -x "$HOME/.local/bin/rtk" ]]; then
   ok "rtk already installed"
 else
   info "Installing rtk…"
-  run_sh 'curl -fsSL https://raw.githubusercontent.com/nikvdp/rtk/main/install.sh | sh'
+  run_sh 'curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh'
 fi
 
 # ===========================================================================
