@@ -48,8 +48,9 @@ The Command Line Tools come in automatically with the Homebrew install.
 
 There's no Trello desktop app anymore, so it's installed as a **Chrome app**: the
 script opens Trello in Chrome — install it via **⋮ ▸ Cast, save, and share ▸
-Install page as app…**. A marker under `~/.config/mac-bootstrap/` keeps re-runs
-from reopening it.
+Install page as app…**. It **detects the actual installed app** (Chrome PWAs live
+under `~/Applications/Chrome Apps.localized/`), so re-runs only reopen the page if
+Trello isn't installed yet — no false "already set up".
 
 ### Chrome sign-in
 
@@ -91,13 +92,13 @@ Isolated and **non-fatal** — an unattended run finishes everything else and te
 you what still needs you:
 
 - **Xcode** — install from the App Store (Apple ID), then re-run.
-- **1Password** — storing the SSH key needs `op` **signed in** (desktop-app
-  integration or `op signin`).
-- **GitHub SSH key** — `gh` must be authenticated (`gh auth login`) **with the
-  `write:public_key` scope**. The script runs `gh auth refresh -h github.com -s
-  write:public_key` (opens a browser) when the scope is missing, then **re-checks**:
-  if the scope is still absent it **warns and skips** the upload (pointing you to
-  `github.com/settings/keys`) rather than failing silently.
+- **1Password** — the `op` CLI must be connected: 1Password app → **Settings ▸
+  Developer ▸ Integrate with 1Password CLI** (then it uses the app's session /
+  Touch ID). Needed for storing the SSH key and reading the pet token.
+- **GitHub SSH key** — if `gh` isn't authenticated, the script **runs `gh auth
+  login` for you** (requesting the `write:public_key` scope), so you're prompted
+  rather than the step failing. If the scope still ends up missing it **warns and
+  skips**, pointing you to `github.com/settings/keys`.
 - **Chrome sign-in** and **Trello** — one-time browser steps.
 
 ## SSH key → GitHub → clone

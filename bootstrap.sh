@@ -119,13 +119,10 @@ echo "User: $GITHUB_USER   Workspace: $HOME/git"
 # A. Homebrew (also installs the Xcode Command Line Tools)
 # ===========================================================================
 section "Homebrew"
-if have brew; then
-  ok "Homebrew already installed"
-else
-  info "Installing Homebrew (this also installs the Xcode Command Line Tools)…"
-  run_sh '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-fi
-# Ensure brew is on PATH for the rest of this run (Apple Silicon vs Intel).
+# Put an already-installed brew on PATH FIRST (Apple Silicon /opt/homebrew or
+# Intel /usr/local) — otherwise `have brew` is false in a fresh shell and we'd
+# needlessly re-download and re-run the installer.
+BREW_SHELLENV=""
 if [[ -x /opt/homebrew/bin/brew ]]; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
   BREW_SHELLENV='eval "$(/opt/homebrew/bin/brew shellenv)"'
@@ -133,7 +130,20 @@ elif [[ -x /usr/local/bin/brew ]]; then
   eval "$(/usr/local/bin/brew shellenv)"
   BREW_SHELLENV='eval "$(/usr/local/bin/brew shellenv)"'
 fi
-if [[ -n "${BREW_SHELLENV:-}" ]] && ! grep -qs 'brew shellenv' "$HOME/.zprofile" 2>/dev/null; then
+if have brew; then
+  ok "Homebrew already installed ($(brew --prefix))"
+else
+  info "Installing Homebrew (this also installs the Xcode Command Line Tools)…"
+  run_sh '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+  # Load the just-installed brew onto PATH.
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"; BREW_SHELLENV='eval "$(/opt/homebrew/bin/brew shellenv)"'
+  elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"; BREW_SHELLENV='eval "$(/usr/local/bin/brew shellenv)"'
+  fi
+fi
+# Persist brew to future shells.
+if [[ -n "$BREW_SHELLENV" ]] && ! grep -qs 'brew shellenv' "$HOME/.zprofile" 2>/dev/null; then
   run_sh "echo '$BREW_SHELLENV' >> \"$HOME/.zprofile\""
 fi
 
@@ -174,16 +184,22 @@ run brew install --cask "${CASKS[@]}" || warn "One or more casks failed — chec
 
 # ---------------------------------------------------------------------------
 # Trello — no desktop app anymore; install as a Chrome app.
+# Detect the ACTUAL installed Chrome PWA (Chrome installs web apps as .app
+# bundles under ~/Applications/Chrome Apps.localized/). A marker only proved we
+# opened the page, not that anything was installed — that gave false positives.
 # ---------------------------------------------------------------------------
 section "Trello (Chrome app)"
-TRELLO_MARKER="$MARKER_DIR/trello-chrome-app"
-if [[ -f "$TRELLO_MARKER" ]]; then
-  ok "Trello Chrome app already set up (marker present)"
+trello_app_installed() {
+  compgen -G "$HOME/Applications/Chrome Apps.localized/*[Tt]rello*.app" >/dev/null 2>&1 \
+    || compgen -G "$HOME/Applications/Chrome Apps/*[Tt]rello*.app" >/dev/null 2>&1 \
+    || compgen -G "/Applications/*[Tt]rello*.app" >/dev/null 2>&1
+}
+if [[ "$DRYRUN" != "1" ]] && trello_app_installed; then
+  ok "Trello Chrome app is installed"
 else
-  info "Opening Trello in Chrome — install it via ⋮ ▸ Cast, save, and share ▸ Install page as app…"
-  run mkdir -p "$MARKER_DIR"
+  info "Trello Chrome app not detected — opening it in Chrome."
+  info "Install it via ⋮ ▸ Cast, save, and share ▸ Install page as app…  (re-run to confirm)"
   run_sh "open -a 'Google Chrome' 'https://trello.com' || true"
-  run touch "$TRELLO_MARKER"
 fi
 
 # ---------------------------------------------------------------------------
@@ -383,20 +399,23 @@ fi
 section "Add SSH key to GitHub"
 if ! have gh; then
   warn "gh not found — skipping GitHub key upload."
-elif [[ "$DRYRUN" != "1" ]] && ! gh auth status >/dev/null 2>&1; then
-  warn "gh is not authenticated — run 'gh auth login', then re-run to upload the key."
+elif [[ "$DRYRUN" == "1" ]]; then
+  echo -e "${YELLOW}[dry-run]${NC} gh auth login (if needed) with write:public_key, then gh ssh-key add ${SSH_KEY}.pub"
 else
-  # `gh ssh-key add` needs the write:public_key scope; default login scopes don't
-  # include it. Refresh if it's missing, then verify — if the scope still isn't
-  # present the upload cannot run, so warn loudly and skip rather than fail silently.
+  # If gh isn't authenticated, PROMPT the user through `gh auth login` right here
+  # (interactive) instead of just bailing. Request write:public_key up front so
+  # the same login grants the scope `gh ssh-key add` needs.
+  if ! gh auth status >/dev/null 2>&1; then
+    info "gh is not authenticated — starting 'gh auth login' (grant the write:public_key scope)…"
+    gh auth login -h github.com -s write:public_key || warn "gh auth login was cancelled or failed."
+  fi
   scope_ok=1
-  if [[ "$DRYRUN" != "1" ]]; then
-    if ! gh auth status 2>&1 | grep -qiE 'public_key'; then
-      warn "gh token lacks the write:public_key scope — requesting it (opens a browser)…"
-      gh auth refresh -h github.com -s write:public_key || true
-      # Re-check: the refresh may have been cancelled or failed.
-      gh auth status 2>&1 | grep -qiE 'public_key' || scope_ok=0
-    fi
+  if ! gh auth status >/dev/null 2>&1; then
+    scope_ok=0   # still not logged in
+  elif ! gh auth status 2>&1 | grep -qiE 'public_key'; then
+    warn "gh token lacks the write:public_key scope — requesting it (opens a browser)…"
+    gh auth refresh -h github.com -s write:public_key || true
+    gh auth status 2>&1 | grep -qiE 'public_key' || scope_ok=0
   fi
   if [[ "$scope_ok" == "0" ]]; then
     warn "⚠ Cannot register the SSH key on GitHub: the write:public_key scope is still missing."
