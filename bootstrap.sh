@@ -33,19 +33,31 @@ section() { echo; echo -e "${BLUE}==>${NC} ${1}"; echo "------------------------
 # Dry-run wrappers
 # ---------------------------------------------------------------------------
 DRYRUN="${BOOTSTRAP_DRYRUN:-0}"
-run() {
-  if [[ "$DRYRUN" == "1" ]]; then echo -e "${YELLOW}[dry-run]${NC} $*"; else "$@"; fi
-}
-run_sh() {
-  if [[ "$DRYRUN" == "1" ]]; then echo -e "${YELLOW}[dry-run]${NC} $*"; else bash -c "$*"; fi
-}
+dryrun_note() { echo -e "${YELLOW}[dry-run]${NC} $*"; }
+run()    { if [[ "$DRYRUN" == "1" ]]; then dryrun_note "$*"; else "$@"; fi; }
+run_sh() { if [[ "$DRYRUN" == "1" ]]; then dryrun_note "$*"; else bash -c "$*"; fi; }
 
 # ---------------------------------------------------------------------------
-# Idempotency helpers
+# Helpers
 # ---------------------------------------------------------------------------
 have() { command -v "$1" >/dev/null 2>&1; }
-brew_has_formula() { brew list --formula --versions "$1" >/dev/null 2>&1; }
-brew_has_cask()    { brew list --cask --versions "$1" >/dev/null 2>&1; }
+
+# Load an already-installed Homebrew onto PATH (Apple Silicon or Intel), and set
+# BREW_SHELLENV to the line that reproduces it for shell persistence.
+load_brew_env() {
+  local p
+  for p in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    [[ -x "$p" ]] && { eval "$("$p" shellenv)"; BREW_SHELLENV="eval \"\$($p shellenv)\""; return 0; }
+  done
+  return 1
+}
+
+# True (0) when the 1Password CLI is connected; probed once, then cached.
+op_connected() {
+  [[ -n "${OP_CONNECTED:-}" ]] && return "$OP_CONNECTED"
+  if have op && op account list >/dev/null 2>&1; then OP_CONNECTED=0; else OP_CONNECTED=1; fi
+  return "$OP_CONNECTED"
+}
 
 # ---------------------------------------------------------------------------
 # Guard: macOS only
@@ -59,6 +71,7 @@ fi
 # Config
 # ---------------------------------------------------------------------------
 GITHUB_USER="albertoblaz"
+HOST="$(hostname -s)"
 MARKER_DIR="$HOME/.config/mac-bootstrap"
 # Directory this script lives in (= the dotfiles repo) — source of .gitconfig etc.
 DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -116,28 +129,16 @@ echo "User: $GITHUB_USER   Workspace: $HOME/git"
 # A. Homebrew (also installs the Xcode Command Line Tools)
 # ===========================================================================
 section "Homebrew"
-# Put an already-installed brew on PATH FIRST (Apple Silicon /opt/homebrew or
-# Intel /usr/local) — otherwise `have brew` is false in a fresh shell and we'd
-# needlessly re-download and re-run the installer.
+# Load an already-installed brew onto PATH FIRST — otherwise `have brew` is false
+# in a fresh shell and we'd needlessly re-download and re-run the installer.
 BREW_SHELLENV=""
-if [[ -x /opt/homebrew/bin/brew ]]; then
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-  BREW_SHELLENV='eval "$(/opt/homebrew/bin/brew shellenv)"'
-elif [[ -x /usr/local/bin/brew ]]; then
-  eval "$(/usr/local/bin/brew shellenv)"
-  BREW_SHELLENV='eval "$(/usr/local/bin/brew shellenv)"'
-fi
+load_brew_env || true
 if have brew; then
   ok "Homebrew already installed ($(brew --prefix))"
 else
   info "Installing Homebrew (this also installs the Xcode Command Line Tools)…"
   run_sh '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-  # Load the just-installed brew onto PATH.
-  if [[ -x /opt/homebrew/bin/brew ]]; then
-    eval "$(/opt/homebrew/bin/brew shellenv)"; BREW_SHELLENV='eval "$(/opt/homebrew/bin/brew shellenv)"'
-  elif [[ -x /usr/local/bin/brew ]]; then
-    eval "$(/usr/local/bin/brew shellenv)"; BREW_SHELLENV='eval "$(/usr/local/bin/brew shellenv)"'
-  fi
+  load_brew_env || true   # load the just-installed brew onto PATH
 fi
 # Persist brew to future shells.
 if [[ -n "$BREW_SHELLENV" ]] && ! grep -qs 'brew shellenv' "$HOME/.zprofile" 2>/dev/null; then
@@ -269,7 +270,7 @@ section "Global Node + gws"
 if have mise; then
   run mise use -g node@lts
   if [[ "$DRYRUN" == "1" ]]; then
-    echo -e "${YELLOW}[dry-run]${NC} mise exec -- npm install -g @googleworkspace/cli"
+    dryrun_note "mise exec -- npm install -g @googleworkspace/cli"
   elif mise exec -- npm ls -g @googleworkspace/cli >/dev/null 2>&1; then
     ok "gws already installed"
   else
@@ -329,9 +330,9 @@ if have pet; then
   #    This runs on EVERY re-run until the token is present — not only on first
   #    download — so a config written before 1Password was connected gets fixed.
   if [[ "$DRYRUN" == "1" ]]; then
-    echo -e "${YELLOW}[dry-run]${NC} if access_token blank: op item get \"$PET_OP_ITEM\" → write into config"
+    dryrun_note "if access_token blank: op item get \"$PET_OP_ITEM\" → write into config"
   elif pet_token_missing; then
-    if have op && op account list >/dev/null 2>&1; then
+    if op_connected; then
       PET_TOKEN="$(op item get "$PET_OP_ITEM" --fields type=concealed --reveal 2>/dev/null | head -1 || true)"
       if [[ -z "$PET_TOKEN" ]]; then
         warn "1Password item '$PET_OP_ITEM' not found or empty — let's set it."
@@ -361,7 +362,7 @@ if have pet; then
 
   # 3. Sync only when the token is actually present.
   if [[ "$DRYRUN" == "1" ]]; then
-    echo -e "${YELLOW}[dry-run]${NC} pet sync (if access_token present)"
+    dryrun_note "pet sync (if access_token present)"
   elif [[ -f "$PET_CONFIG" ]] && ! pet_token_missing; then
     info "Syncing pet snippets from GitHub Gist…"
     pet sync || warn "pet sync failed — check the gist id/token in $PET_CONFIG."
@@ -381,7 +382,7 @@ fi
 section "SSH key (1Password)"
 SSH_KEY="$HOME/.ssh/id_ed25519"
 OP_VAULT="${OP_VAULT:-Personal}"
-SSH_ITEM_TITLE="${SSH_ITEM_TITLE:-SSH: $(hostname -s)}"
+SSH_ITEM_TITLE="${SSH_ITEM_TITLE:-SSH: $HOST}"
 run mkdir -p "$HOME/.ssh"
 run chmod 700 "$HOME/.ssh"
 
@@ -390,11 +391,19 @@ ensure_ssh_config() {  # idempotent ~/.ssh/config entry
     run_sh "printf 'Host *\n  AddKeysToAgent yes\n  UseKeychain yes\n  IdentityFile %s\n' '$SSH_KEY' >> \"$HOME/.ssh/config\""
   fi
 }
+pull_op_key() {  # <op-reference> <dest> <chmod-mode> <label> — idempotent
+  if [[ -f "$2" ]]; then ok "$4 already present at $2"; return 0; fi
+  if op read "$1" > "$2" 2>/dev/null && [[ -s "$2" ]]; then
+    chmod "$3" "$2"; ok "Wrote $4 → $2"
+  else
+    rm -f "$2"; warn "Could not read the $4 from 1Password (vault '$OP_VAULT'?)."
+  fi
+}
 
 if [[ "$DRYRUN" == "1" ]]; then
-  echo -e "${YELLOW}[dry-run]${NC} ensure 1Password SSH Key item '$SSH_ITEM_TITLE' (generate if absent),"
-  echo -e "${YELLOW}[dry-run]${NC} then op read private/public → $SSH_KEY(.pub); fall back to ssh-keygen if op unavailable"
-elif have op && op account list >/dev/null 2>&1; then
+  dryrun_note "ensure 1Password SSH Key item '$SSH_ITEM_TITLE' (generate if absent),"
+  dryrun_note "then op read private/public → $SSH_KEY(.pub); fall back to ssh-keygen if op unavailable"
+elif op_connected; then
   # 1. Ensure the SSH Key item exists in 1Password (idempotent — generate once).
   if op item get "$SSH_ITEM_TITLE" --vault "$OP_VAULT" >/dev/null 2>&1; then
     ok "1Password SSH Key item '$SSH_ITEM_TITLE' already exists"
@@ -405,24 +414,8 @@ elif have op && op account list >/dev/null 2>&1; then
       || warn "Could not create the SSH Key item in 1Password."
   fi
   # 2. Materialize the key locally from 1Password (idempotent — only if missing).
-  if [[ ! -f "$SSH_KEY" ]]; then
-    if op read "op://$OP_VAULT/$SSH_ITEM_TITLE/private key?ssh-format=openssh" > "$SSH_KEY" 2>/dev/null && [[ -s "$SSH_KEY" ]]; then
-      chmod 600 "$SSH_KEY"; ok "Wrote private key → $SSH_KEY"
-    else
-      rm -f "$SSH_KEY"; warn "Could not read the private key from 1Password (vault '$OP_VAULT'?)."
-    fi
-  else
-    ok "Private key already present at $SSH_KEY"
-  fi
-  if [[ ! -f "$SSH_KEY.pub" ]]; then
-    if op read "op://$OP_VAULT/$SSH_ITEM_TITLE/public key" > "$SSH_KEY.pub" 2>/dev/null && [[ -s "$SSH_KEY.pub" ]]; then
-      chmod 644 "$SSH_KEY.pub"; ok "Wrote public key → $SSH_KEY.pub"
-    else
-      rm -f "$SSH_KEY.pub"; warn "Could not read the public key from 1Password."
-    fi
-  fi
-  ensure_ssh_config
-  [[ -f "$SSH_KEY" ]] && run ssh-add --apple-use-keychain "$SSH_KEY" 2>/dev/null || true
+  pull_op_key "op://$OP_VAULT/$SSH_ITEM_TITLE/private key?ssh-format=openssh" "$SSH_KEY"     600 "private key"
+  pull_op_key "op://$OP_VAULT/$SSH_ITEM_TITLE/public key"                    "$SSH_KEY.pub" 644 "public key"
 else
   # Fallback: no op — generate locally so the clone still works. (Won't be an
   # SSH Key item in 1Password; import it via the desktop app if you want that.)
@@ -434,33 +427,41 @@ else
     run ssh-keygen -t ed25519 -C "$GOOGLE_EMAIL" -f "$SSH_KEY" -N ""
     run chmod 600 "$SSH_KEY"; run chmod 644 "${SSH_KEY}.pub"
   fi
-  ensure_ssh_config
-  [[ -f "$SSH_KEY" ]] && run ssh-add --apple-use-keychain "$SSH_KEY" 2>/dev/null || true
+fi
+
+# Shared post-setup wiring for both branches: ssh config entry + agent.
+ensure_ssh_config
+if [[ "$DRYRUN" != "1" && -f "$SSH_KEY" ]]; then
+  ssh-add --apple-use-keychain "$SSH_KEY" 2>/dev/null || true
 fi
 
 section "Add SSH key to GitHub"
 if ! have gh; then
   warn "gh not found — skipping GitHub key upload."
 elif [[ "$DRYRUN" == "1" ]]; then
-  echo -e "${YELLOW}[dry-run]${NC} gh auth login (if not authenticated), then gh ssh-key add ${SSH_KEY}.pub"
+  dryrun_note "gh auth login (if not authenticated), then gh ssh-key add ${SSH_KEY}.pub"
 else
   # If gh isn't authenticated, walk the user through `gh auth login`. Scopes come
   # from the token, so no --scopes flag is needed with a PAT — just make sure the
   # PAT has write:public_key (admin:public_key). Choosing the SSH protocol during
   # login also offers to upload this public key, which registers it directly.
-  if ! gh auth status >/dev/null 2>&1; then
+  # Authenticate once on the happy path; only re-check if we had to run login.
+  if gh auth status >/dev/null 2>&1; then
+    gh_authed=1
+  else
     info "gh is not authenticated — starting 'gh auth login'…"
     info "Suggested answers: github.com · SSH · your ~/.ssh/id_ed25519 key · title 'gh' · authenticate with your PAT."
     gh auth login || warn "gh auth login was cancelled or failed."
+    gh auth status >/dev/null 2>&1 && gh_authed=1 || gh_authed=0
   fi
-  if ! gh auth status >/dev/null 2>&1; then
+  if [[ "$gh_authed" != "1" ]]; then
     warn "gh still not authenticated — add ${SSH_KEY}.pub manually at https://github.com/settings/keys."
   elif [[ ! -f "${SSH_KEY}.pub" ]]; then
     warn "No public key at ${SSH_KEY}.pub — skipping GitHub upload (SSH key setup didn't complete)."
   else
     # Ensure the key is registered. The SSH-protocol login may already have added
     # it; a repeat add returns "already in use", which we treat as success.
-    if add_out="$(gh ssh-key add "${SSH_KEY}.pub" --title "$(hostname -s)" 2>&1)"; then
+    if add_out="$(gh ssh-key add "${SSH_KEY}.pub" --title "$HOST" 2>&1)"; then
       ok "Registered SSH key on GitHub"
     elif grep -qiE 'already' <<<"$add_out"; then
       ok "SSH key already registered on GitHub"
@@ -496,7 +497,7 @@ for repo in "${REPOS[@]}"; do
     # refuse a non-empty target anyway). Skip and let the user sort it out.
     warn "$repo: $dest exists but isn't a git repo — skipping clone."
   elif [[ "$DRYRUN" == "1" ]]; then
-    echo -e "${YELLOW}[dry-run]${NC} git clone git@github.com:${GITHUB_USER}/${repo}.git $dest (parallel)"
+    dryrun_note "git clone git@github.com:${GITHUB_USER}/${repo}.git $dest (parallel)"
   else
     info "Cloning $repo…"
     ( git clone "git@github.com:${GITHUB_USER}/${repo}.git" "$dest" >/dev/null 2>&1 \
