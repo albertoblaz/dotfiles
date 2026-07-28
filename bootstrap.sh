@@ -375,21 +375,25 @@ fi
 # H. SSH key (generated in 1Password as an SSH Key item) + register on GitHub
 # ===========================================================================
 # The op CLI can't IMPORT an existing private key as an "SSH Key" item (that's
-# desktop-app only), so to get a proper SSH Key item we GENERATE the key inside
-# 1Password and pull it down to ~/.ssh. Falls back to local ssh-keygen if op
-# isn't available so the clone step still has a key. Override the vault with
-# OP_VAULT=... if your keys don't live in "Private".
-section "SSH key (1Password)"
+# desktop-app only), so we GENERATE the key inside 1Password. The PRIVATE key
+# never touches disk — the 1Password SSH agent serves it; we pull only the PUBLIC
+# key (for the ssh-config IdentityFile and the GitHub upload). Falls back to a
+# local on-disk key + Keychain when op isn't available. Override the vault with
+# OP_VAULT=... if your keys don't live in "Personal".
+section "SSH key (1Password SSH agent)"
 SSH_KEY="$HOME/.ssh/id_ed25519"
 OP_VAULT="${OP_VAULT:-Personal}"
 SSH_ITEM_TITLE="${SSH_ITEM_TITLE:-SSH: $HOST}"
+OP_SSH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 run mkdir -p "$HOME/.ssh"
 run chmod 700 "$HOME/.ssh"
 
-ensure_ssh_config() {  # idempotent ~/.ssh/config entry
-  if [[ ! -f "$HOME/.ssh/config" ]] || ! grep -qs 'id_ed25519' "$HOME/.ssh/config" 2>/dev/null; then
-    run_sh "printf 'Host *\n  AddKeysToAgent yes\n  UseKeychain yes\n  IdentityFile %s\n' '$SSH_KEY' >> \"$HOME/.ssh/config\""
-  fi
+# Append a block to ~/.ssh/config once (idempotent, keyed by a unique marker).
+append_ssh_block() {  # <grep-marker> <block-text>
+  local cfg="$HOME/.ssh/config"
+  grep -qs "$1" "$cfg" 2>/dev/null && return 0
+  if [[ "$DRYRUN" == "1" ]]; then dryrun_note "append ssh-config block matching /$1/ to $cfg"
+  else printf '%s\n' "$2" >> "$cfg"; fi
 }
 pull_op_key() {  # <op-reference> <dest> <chmod-mode> <label> — idempotent
   if [[ -f "$2" ]]; then ok "$4 already present at $2"; return 0; fi
@@ -400,10 +404,7 @@ pull_op_key() {  # <op-reference> <dest> <chmod-mode> <label> — idempotent
   fi
 }
 
-if [[ "$DRYRUN" == "1" ]]; then
-  dryrun_note "ensure 1Password SSH Key item '$SSH_ITEM_TITLE' (generate if absent),"
-  dryrun_note "then op read private/public → $SSH_KEY(.pub); fall back to ssh-keygen if op unavailable"
-elif op_connected; then
+if [[ "$DRYRUN" != "1" ]] && op_connected; then
   # 1. Ensure the SSH Key item exists in 1Password (idempotent — generate once).
   if op item get "$SSH_ITEM_TITLE" --vault "$OP_VAULT" >/dev/null 2>&1; then
     ok "1Password SSH Key item '$SSH_ITEM_TITLE' already exists"
@@ -413,13 +414,33 @@ elif op_connected; then
       && ok "Created 1Password SSH Key item" \
       || warn "Could not create the SSH Key item in 1Password."
   fi
-  # 2. Materialize the key locally from 1Password (idempotent — only if missing).
-  pull_op_key "op://$OP_VAULT/$SSH_ITEM_TITLE/private key?ssh-format=openssh" "$SSH_KEY"     600 "private key"
-  pull_op_key "op://$OP_VAULT/$SSH_ITEM_TITLE/public key"                    "$SSH_KEY.pub" 644 "public key"
+  # 2. Pull ONLY the public key — the private key stays in 1Password (agent-served).
+  pull_op_key "op://$OP_VAULT/$SSH_ITEM_TITLE/public key" "$SSH_KEY.pub" 644 "public key"
+  # 3. Point ssh at the 1Password agent, and restrict GitHub to just this key so
+  #    it authorizes once per session instead of once per key.
+  append_ssh_block '1password/t/agent.sock' "Host *
+  IdentityAgent \"$OP_SSH_SOCK\"
+"
+  append_ssh_block '^Host github.com' "Host github.com
+  IdentitiesOnly yes
+  IdentityFile $SSH_KEY.pub
+"
+  # 4. The agent itself must be enabled in the app (one-time, can't be scripted).
+  if [[ -S "$OP_SSH_SOCK" ]]; then
+    ok "1Password SSH agent is enabled"
+  else
+    warn "1Password SSH agent is OFF — enable it: 1Password ▸ Settings ▸ Developer ▸ 'Use the SSH agent'."
+    warn "  One-time in-app toggle (can't be scripted). Opening 1Password; re-run after so clones can auth."
+    open -a "1Password" 2>/dev/null || true
+  fi
+elif [[ "$DRYRUN" == "1" ]]; then
+  dryrun_note "ensure 1Password SSH Key item '$SSH_ITEM_TITLE', pull public key → $SSH_KEY.pub,"
+  dryrun_note "configure ~/.ssh/config for the 1Password SSH agent (private key stays in 1Password)"
+  append_ssh_block '1password/t/agent.sock' ""
+  append_ssh_block '^Host github.com' ""
 else
-  # Fallback: no op — generate locally so the clone still works. (Won't be an
-  # SSH Key item in 1Password; import it via the desktop app if you want that.)
-  warn "1Password CLI not available/connected — generating the key locally instead."
+  # Fallback: no op — local on-disk key + Keychain (no agent available).
+  warn "1Password CLI not available/connected — using a local on-disk key + Keychain instead."
   warn "  (Enable 1Password ▸ Settings ▸ Developer ▸ Integrate with 1Password CLI to store it as an SSH Key item.)"
   if [[ -f "$SSH_KEY" ]]; then
     ok "SSH key already exists — not overwriting ($SSH_KEY)"
@@ -427,12 +448,12 @@ else
     run ssh-keygen -t ed25519 -C "$GOOGLE_EMAIL" -f "$SSH_KEY" -N ""
     run chmod 600 "$SSH_KEY"; run chmod 644 "${SSH_KEY}.pub"
   fi
-fi
-
-# Shared post-setup wiring for both branches: ssh config entry + agent.
-ensure_ssh_config
-if [[ "$DRYRUN" != "1" && -f "$SSH_KEY" ]]; then
-  ssh-add --apple-use-keychain "$SSH_KEY" 2>/dev/null || true
+  append_ssh_block 'UseKeychain yes' "Host *
+  AddKeysToAgent yes
+  UseKeychain yes
+  IdentityFile $SSH_KEY
+"
+  [[ -f "$SSH_KEY" ]] && ssh-add --apple-use-keychain "$SSH_KEY" 2>/dev/null || true
 fi
 
 section "Add SSH key to GitHub"

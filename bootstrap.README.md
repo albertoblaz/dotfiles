@@ -31,7 +31,7 @@ where no formula exists: **Claude Code**, **rtk**, **oh-my-zsh**.
 | git config | copies the repo's `.gitconfig` to `~/.gitconfig`, filling the email placeholder |
 | Apple toolchain | Xcode Command Line Tools, full Xcode (**Mac App Store**), iOS simulator runtime |
 | Snippets | pet config fetched from this repo + token from 1Password + `pet sync` |
-| SSH | key **generated in 1Password** as an SSH Key item, pulled to `~/.ssh`, **registered on GitHub** |
+| SSH | key **generated in 1Password** (SSH Key item), served by the **1Password SSH agent** (private key never on disk), **registered on GitHub** |
 | Workspace | `~/git/` + clones my repos (see below) |
 
 Formulae and casks each install in a **single `brew` call** so bottles download in
@@ -94,9 +94,11 @@ Isolated and **non-fatal** — an unattended run finishes everything else and te
 you what still needs you:
 
 - **Xcode** — install from the App Store (Apple ID), then re-run.
-- **1Password** — the `op` CLI must be connected: 1Password app → **Settings ▸
-  Developer ▸ Integrate with 1Password CLI** (then it uses the app's session /
-  Touch ID). Needed for storing the SSH key and reading the pet token.
+- **1Password** — two one-time in-app toggles (Settings ▸ Developer), neither
+  scriptable: **Integrate with 1Password CLI** (needed to generate the SSH key and
+  read the pet token) and **Use the SSH agent** (serves the SSH key so the private
+  key never touches disk). The script detects the SSH agent and opens 1Password if
+  it's off.
 - **GitHub SSH key** — if `gh` isn't authenticated, the script **runs `gh auth
   login`** so you're prompted through it. Suggested answers: **github.com · SSH ·
   your `~/.ssh/id_ed25519` key · title `gh` · authenticate with your PAT**. Your
@@ -108,16 +110,19 @@ you what still needs you:
 
 ## SSH key → GitHub → clone
 
+Uses the **1Password SSH agent** — the private key never touches disk.
+
 1. **Generates the key inside 1Password** as a proper **SSH Key** item
    (`op item create --category ssh`) — the op CLI can't *import* an existing key as
    an SSH Key item (desktop-app only), so generating it there is the way to get the
    right item type. Idempotent: skips if the item already exists. Defaults to the
    `Personal` vault; set `OP_VAULT=…` to override.
-2. Pulls the private + public key down to `~/.ssh/id_ed25519(.pub)` via
-   `op read "op://…/private key?ssh-format=openssh"`, wires it into the ssh-agent +
-   Keychain. If `op` isn't available it **falls back to local `ssh-keygen`** so the
-   clone still works (that key won't be a 1Password SSH Key item — import it via the
-   desktop app if you want that).
+2. Pulls **only the public key** to `~/.ssh/id_ed25519.pub` (for the ssh-config
+   `IdentityFile` and the GitHub upload), and writes `~/.ssh/config` to point at the
+   1Password agent socket with a `Host github.com` block (`IdentitiesOnly yes` +
+   that one `IdentityFile`) so GitHub authorizes **once per session, not per key**.
+   With Touch ID unlock this is seamless. If `op` isn't available it **falls back to
+   a local on-disk key + Keychain** so the clone still works.
 3. Registers the **public** key on **GitHub** via `gh ssh-key add` (treats
    "already in use" as success).
 4. Pre-trusts `github.com` (`ssh-keyscan`) so the first SSH clone doesn't hang, then
