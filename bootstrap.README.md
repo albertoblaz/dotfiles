@@ -54,10 +54,9 @@ from reopening it.
 ### Chrome sign-in
 
 The script opens the Google sign-in page in Chrome so you can sign in with your
-Google account — the 1Password extension autofills the password. The email is read
-from the `GOOGLE_EMAIL` env var (e.g. a CI repo secret) or prompted for — it is
-**never** hardcoded in this public repo. Google sign-in can't be scripted safely,
-so this step is a one-time prompt, marker-guarded.
+Google account — the 1Password extension autofills the password. The script
+**prompts** for the email (it is **never** hardcoded in this public repo). Google
+sign-in can't be scripted safely, so this step is a one-time prompt, marker-guarded.
 
 ### pet
 

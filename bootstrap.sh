@@ -90,17 +90,15 @@ if [[ -f "$DOTFILES_DIR/.gitconfig" ]]; then
   fi
 fi
 
-# Emails are PII — never hardcoded in this public repo. Supply via env
-# (e.g. a CI repo secret) or get prompted. The committed .gitconfig ships a
-# WORK_EMAIL_ADDRESS placeholder, so a placeholder value is treated as unset.
-GIT_EMAIL="${GIT_EMAIL:-$(git config --global user.email 2>/dev/null || true)}"
+# Emails are PII — never hardcoded in this public repo; just prompt for them.
+# The committed .gitconfig ships a WORK_EMAIL_ADDRESS placeholder, so that value
+# is treated as unset for the SSH-key email.
+GIT_EMAIL="$(git config --global user.email 2>/dev/null || true)"
 if [[ -z "$GIT_EMAIL" || "$GIT_EMAIL" == "WORK_EMAIL_ADDRESS" ]]; then
   read -rp "Email for the new SSH key comment: " GIT_EMAIL || true
 fi
-GOOGLE_EMAIL="${GOOGLE_EMAIL:-}"
-if [[ -z "$GOOGLE_EMAIL" ]]; then
-  read -rp "Google account email for Chrome sign-in: " GOOGLE_EMAIL || true
-fi
+GOOGLE_EMAIL=""
+read -rp "Google account email for Chrome sign-in: " GOOGLE_EMAIL || true
 
 echo -e "${GREEN}💻 macOS dev bootstrap (personal)${NC}"
 echo "User: $GITHUB_USER   Workspace: $HOME/git"
