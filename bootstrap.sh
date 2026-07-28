@@ -380,7 +380,7 @@ fi
 # OP_VAULT=... if your keys don't live in "Private".
 section "SSH key (1Password)"
 SSH_KEY="$HOME/.ssh/id_ed25519"
-OP_VAULT="${OP_VAULT:-Private}"
+OP_VAULT="${OP_VAULT:-Personal}"
 SSH_ITEM_TITLE="${SSH_ITEM_TITLE:-SSH: $(hostname -s)}"
 run mkdir -p "$HOME/.ssh"
 run chmod 700 "$HOME/.ssh"

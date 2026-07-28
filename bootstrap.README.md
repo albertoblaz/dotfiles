@@ -111,8 +111,8 @@ you what still needs you:
 1. **Generates the key inside 1Password** as a proper **SSH Key** item
    (`op item create --category ssh`) — the op CLI can't *import* an existing key as
    an SSH Key item (desktop-app only), so generating it there is the way to get the
-   right item type. Idempotent: skips if the item already exists. Set `OP_VAULT=…`
-   if your keys don't live in the `Private` vault.
+   right item type. Idempotent: skips if the item already exists. Defaults to the
+   `Personal` vault; set `OP_VAULT=…` to override.
 2. Pulls the private + public key down to `~/.ssh/id_ed25519(.pub)` via
    `op read "op://…/private key?ssh-format=openssh"`, wires it into the ssh-agent +
    Keychain. If `op` isn't available it **falls back to local `ssh-keygen`** so the
