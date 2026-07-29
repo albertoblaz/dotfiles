@@ -68,29 +68,48 @@ interactive() { [[ -t 0 ]]; }
 PENDING=()
 pending() { PENDING+=("$1"); }
 
+# Re-run <check> until it succeeds, prompting between attempts. Returns 1 if the
+# user skips or the run is unattended. Shared by the two blocking waits (the
+# 1Password SSH agent, and GitHub SSH auth before cloning).
+wait_until() {  # <check-fn> <prompt> <pending-message>
+  local check="$1" prompt="$2" pending_msg="$3" ans=""
+  while ! "$check"; do
+    if ! interactive; then
+      warn "  Unattended run — continuing without it."
+      pending "$pending_msg"; return 1
+    fi
+    read -rp "$prompt" ans || return 1
+    case "$ans" in [sS]*) warn "  Skipped."; pending "$pending_msg"; return 1 ;; esac
+  done
+}
+
 # `brew install a b c` aborts at the first failure, silently skipping everything
 # after it. Install one at a time so a failure costs only that item; fetch up
 # front so the downloads still overlap. --adopt takes over a matching app that's
 # already in /Applications instead of calling it a conflict.
-brew_one() {  # <formula|cask> <item>
-  if [[ "$1" == "cask" ]]; then brew install --cask --adopt "$2"; else brew install "$2"; fi
-}
 brew_install_each() {  # <formula|cask> <item…>
   local kind="$1"; shift
-  local item failed=()
+  local item installed missing=() failed=() cask="" list_flag="--formula"
+  if [[ "$kind" == "cask" ]]; then cask="--cask"; list_flag="--cask"; fi
   if [[ "$DRYRUN" == "1" ]]; then
-    dryrun_note "brew fetch $*"
-    dryrun_note "brew install (one at a time$([[ "$kind" == "cask" ]] && echo ', --cask --adopt')): $*"
+    dryrun_note "brew install $cask (one at a time, skipping what's present): $*"
     return 0
   fi
-  if [[ "$kind" == "cask" ]]; then brew fetch --cask "$@" || true
-  else                             brew fetch "$@" || true; fi
+  # Skip what's already there: `brew install` on a present item still pays
+  # Homebrew's startup, and one-at-a-time turns that into N on every re-run.
+  installed="$(brew list $list_flag -1 2>/dev/null || true)"
   for item in "$@"; do
-    if brew_one "$kind" "$item"; then ok "$item"; else warn "$item — install failed"; failed+=("$item"); fi
+    if grep -qxF "$item" <<<"$installed"; then ok "$item"; else missing+=("$item"); fi
+  done
+  [[ ${#missing[@]} -eq 0 ]] && return 0
+  brew fetch $cask "${missing[@]}" || true
+  for item in "${missing[@]}"; do
+    if brew install $cask ${cask:+--adopt} "$item"; then ok "$item"
+    else warn "$item — install failed"; failed+=("$item"); fi
   done
   if [[ ${#failed[@]} -gt 0 ]]; then
     warn "Not installed (${#failed[@]}): ${failed[*]}"
-    warn "  Run 'brew install $([[ "$kind" == "cask" ]] && echo '--cask ')${failed[0]}' to see the reason."
+    warn "  Run 'brew install $cask ${failed[0]}' to see the reason."
     pending "Homebrew: these didn't install — ${failed[*]}"
   fi
 }
@@ -314,8 +333,7 @@ section "Dock"
 # than hardcoding, since that directory's name is localized.
 TRELLO_APP="/Applications/Trello.app"          # fallback, for the "not found" warning
 for candidate in "$HOME/Applications/Chrome Apps.localized/Trello.app" \
-                 "$HOME/Applications/Chrome Apps/Trello.app" \
-                 "/Applications/Trello.app"; do
+                 "$HOME/Applications/Chrome Apps/Trello.app"; do
   [[ -e "$candidate" ]] && { TRELLO_APP="$candidate"; break; }
 done
 
@@ -464,7 +482,7 @@ else
 fi
 
 section "rtk (Rust Token Killer)"
-if have rtk || [[ -x "$HOME/.local/bin/rtk" ]]; then
+if have rtk || [[ -x "$LOCAL_BIN/rtk" ]]; then
   ok "rtk already installed"
 else
   info "Installing rtk…"
@@ -775,24 +793,15 @@ append_ssh_block() {  # <grep-marker> <block-text>
 # Pause until the 1Password SSH agent socket exists (or the user opts out).
 # Enabling the agent is a one-time in-app toggle we can't script, and every
 # clone depends on it — so we wait instead of failing later.
+op_ssh_agent_on() { [[ -S "$OP_SSH_SOCK" ]]; }
 wait_for_op_ssh_agent() {
-  local ans=""
-  [[ -S "$OP_SSH_SOCK" ]] && { ok "1Password SSH agent is enabled"; return 0; }
+  op_ssh_agent_on && { ok "1Password SSH agent is enabled"; return 0; }
   warn "1Password SSH agent is OFF — enable it: 1Password ▸ Settings ▸ Developer ▸ 'Use the SSH agent'."
   warn "  One-time in-app toggle (can't be scripted). Opening 1Password…"
   open -a "1Password" 2>/dev/null || true
-  if ! interactive; then
-    warn "Non-interactive run — continuing without it; the clones below will fail to authenticate."
-    return 1
-  fi
-  while [[ ! -S "$OP_SSH_SOCK" ]]; do
-    read -rp "Turn the agent on, then press Enter to re-check (or 's' to skip): " ans || return 1
-    case "$ans" in
-      [sS]*) warn "Skipped — clones may fail to authenticate."
-             pending "1Password: turn on Settings ▸ Developer ▸ 'Use the SSH agent', then re-run."
-             return 1 ;;
-    esac
-  done
+  wait_until op_ssh_agent_on \
+    "Turn it on, then press Enter to re-check (or 's' to skip): " \
+    "1Password: turn on Settings ▸ Developer ▸ 'Use the SSH agent', then re-run." || return 1
   ok "1Password SSH agent is enabled"
 }
 
@@ -916,15 +925,15 @@ github_ssh_ok() {
   grep -q 'successfully authenticated' <<<"$out"
 }
 if [[ "$DRYRUN" != "1" ]]; then
-  ssh_ans=""; ssh_auth_ok=0
-  while :; do
-    if github_ssh_ok; then ssh_auth_ok=1; break; fi
+  if github_ssh_ok; then
+    ok "SSH to github.com authenticates"
+  else
     warn "SSH to github.com isn't authenticating yet (agent off, key not registered, or not yet approved)."
-    interactive || { warn "Non-interactive run — attempting the clones anyway."; break; }
-    read -rp "Press Enter to retry (or 's' to skip the check): " ssh_ans || break
-    case "$ssh_ans" in [sS]*) warn "Skipping the check — clones may fail."; break ;; esac
-  done
-  [[ "$ssh_auth_ok" == "1" ]] && ok "SSH to github.com authenticates" || true
+    wait_until github_ssh_ok \
+      "Press Enter to retry (or 's' to skip the check): " \
+      "GitHub: SSH didn't authenticate — some clones may have failed." \
+      && ok "SSH to github.com authenticates" || true
+  fi
 fi
 # Clone the missing repos in parallel, then wait for all of them.
 clone_pids=()
