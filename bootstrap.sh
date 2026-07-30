@@ -68,6 +68,15 @@ interactive() { [[ -t 0 ]]; }
 PENDING=()
 pending() { PENDING+=("$1"); }
 
+# Single owner of the EXIT trap, so later additions have one obvious home
+# instead of silently replacing someone else's trap.
+SUDO_KEEPALIVE_PID=""
+cleanup() {
+  [[ -n "$SUDO_KEEPALIVE_PID" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
+  return 0
+}
+trap cleanup EXIT
+
 # Re-run <check> until it succeeds, prompting between attempts. Returns 1 if the
 # user skips or the run is unattended. Shared by the two blocking waits (the
 # 1Password SSH agent, and GitHub SSH auth before cloning).
@@ -128,9 +137,12 @@ LOCAL_BIN="$HOME/.local/bin"
 # export LOCAL_BIN into this run below — without resetting it the probe would
 # just measure our own export and always pass. Starting minimal means only what
 # the login shell's rc files contribute can satisfy the check.
+# </dev/null so an rc file that reads from stdin gets EOF instead of hanging the
+# whole bootstrap.
 fresh_shell_has_local_bin() {
   have zsh || return 1
-  PATH=/usr/bin:/bin zsh -lic 'case ":$PATH:" in *"/.local/bin:"*) exit 0 ;; *) exit 1 ;; esac' >/dev/null 2>&1
+  PATH=/usr/bin:/bin zsh -lic 'case ":$PATH:" in *"/.local/bin:"*) exit 0 ;; *) exit 1 ;; esac' \
+    </dev/null >/dev/null 2>&1
 }
 
 ensure_local_bin_path() {
@@ -239,7 +251,6 @@ echo "User: $GITHUB_USER   Workspace: $HOME/git"
 # interrupt a long download into one predictable prompt; the keep-alive stops
 # sudo lapsing mid-install (it forgets after ~5 idle minutes).
 # ---------------------------------------------------------------------------
-SUDO_KEEPALIVE_PID=""
 prime_sudo() {
   if [[ "$DRYRUN" == "1" ]]; then
     dryrun_note "sudo -v (prime admin rights, then refresh in the background)"
@@ -263,8 +274,7 @@ prime_sudo() {
   # `|| true` is load-bearing: the subshell inherits `set -e`, so one failed
   # refresh would kill the keep-alive and every later step would prompt again.
   ( while kill -0 "$$" 2>/dev/null; do sudo -n -v 2>/dev/null || true; sleep 60; done ) &
-  SUDO_KEEPALIVE_PID="$!"
-  trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true' EXIT
+  SUDO_KEEPALIVE_PID="$!"   # cleanup() kills it on exit
 }
 prime_sudo || true
 
@@ -576,6 +586,12 @@ toml_get() {  # <file> <section> <key>
 }
 toml_set() {  # <file> <section> <key> <value>
   local tmp="$1.bootstrap.tmp"
+  # Values here are tokens and paths. A quote or backslash would produce invalid
+  # TOML (and awk -v would eat the escape), so refuse rather than corrupt the
+  # config — anything like that is a bad paste, not a real token.
+  case "$4" in
+    *[\"\\]*|*$'\n'*) warn "Refusing to write a $3 containing a quote, backslash or newline."; return 1 ;;
+  esac
   awk -v sec="$2" -v key="$3" -v val="$4" '
     /^[[:space:]]*\[/ { s = $0; gsub(/[][ \t]/, "", s); print; next }
     s == sec && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
@@ -583,7 +599,7 @@ toml_set() {  # <file> <section> <key> <value>
       print substr($0, 1, RLENGTH) key " = \"" val "\""; next
     }
     { print }
-  ' "$1" > "$tmp" && mv "$tmp" "$1"
+  ' "$1" > "$tmp" && chmod "$(stat -f '%Lp' "$1")" "$tmp" && mv "$tmp" "$1"
 }
 
 # Read the item's concealed field. NOT `--fields type=concealed | head -1`: op
@@ -725,6 +741,9 @@ if have pet; then
     curl -fsSL "$PET_CONFIG_URL" -o "$PET_CONFIG" \
       || warn "Could not download pet config — run 'pet configure' manually."
   fi
+  # The GitHub token gets written into this file, and curl creates it 0644.
+  # toml_set preserves the mode, so this holds across re-runs.
+  [[ "$DRYRUN" != "1" && -f "$PET_CONFIG" ]] && chmod 600 "$PET_CONFIG"
 
   # 1b. SnippetFile must be set AND exist: pet 1.0.1 panics on a blank one and
   #     refuses to run on a missing file. The path embeds $HOME, so it's filled

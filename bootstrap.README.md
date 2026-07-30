@@ -34,9 +34,12 @@ where no formula exists: **Claude Code**, **rtk**, **oh-my-zsh**.
 | Snippets | pet config fetched from this repo + token from 1Password + `pet sync` |
 | SSH | key **generated in 1Password** (SSH Key item), served by the **1Password SSH agent** (private key never on disk), **registered on GitHub** |
 | Workspace | `~/git/` + clones my repos (see below) |
+| Dock | pinned to an exact list and order — **replaces** whatever is pinned, including the macOS defaults |
 
-Everything is fetched up front with `brew fetch` so downloads overlap, then each
-formula and cask is installed **one at a time**. This matters: `brew install a b c`
+Anything already installed is filtered out with a single `brew list` first — one
+`brew` call instead of one per item, so a re-run on a provisioned machine costs
+milliseconds. Whatever's left is fetched up front with `brew fetch` so downloads
+overlap, then installed **one at a time**. This matters: `brew install a b c`
 **aborts the whole command at the first failure**, so one conflicting item silently
 takes out everything listed after it — a pre-existing `/Applications/1Password.app`
 (installed outside brew) is enough to skip the ten casks that follow it. Installing
@@ -103,6 +106,10 @@ The token is read from the 1Password item named **`pet - GitHub Classic Token`**
 (override with `PET_OP_ITEM`). If that item doesn't exist, the script **creates it**
 from a token you paste in. The committed config already has the real `gist_id`
 (syncing `pet-snippet.toml`) — the Gist id is not a secret.
+
+`~/.config/pet/config.toml` is chmod **600** — `curl` creates it world-readable
+and the GitHub token gets written into it. The TOML writer preserves the file's
+mode, so that survives re-runs.
 
 The token is read from the item's **concealed field**, via `--format json` (or the
 `Value:` line without `jq`). Not `op item get --fields type=concealed | head -1`:
