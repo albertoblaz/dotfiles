@@ -978,6 +978,42 @@ done
 [[ ${#clone_pids[@]} -gt 0 ]] && wait "${clone_pids[@]}" 2>/dev/null || true
 
 # ===========================================================================
+# /usr/local/bin has to stay traversable
+# ===========================================================================
+# An installer that creates /usr/local/bin under a restrictive umask leaves it
+# mode 700 root:wheel, and every symlink inside becomes invisible to you:
+# `docker`, `kubectl` and `tailscale` are all "command not found" even though
+# the links are present and correct.
+#
+# Seen 2026-07-30 on this machine. The directory's btime matched the second
+# /usr/local/bin/1password-mcp was created, and that link's lrwx------ mode
+# records the creating process's 077 umask — every Docker-created link beside
+# it is lrwxr-xr-x (umask 022). Docker then added its symlinks to the
+# already-broken directory; installers don't chmod directories they didn't
+# create, so nothing self-heals. Not reported upstream anywhere I could find.
+#
+# Runs last so it also catches anything the cask installs above just created.
+# Tests behaviour (can I traverse it?) rather than comparing a mode string,
+# the same way the ~/.local/bin check asks a fresh shell instead of grepping.
+section "/usr/local/bin permissions"
+USR_LOCAL_BIN="/usr/local/bin"
+if [[ ! -d "$USR_LOCAL_BIN" ]]; then
+  ok "$USR_LOCAL_BIN doesn't exist — nothing to fix"
+elif [[ -r "$USR_LOCAL_BIN" && -x "$USR_LOCAL_BIN" ]]; then
+  ok "$USR_LOCAL_BIN is readable and traversable"
+elif [[ "$DRYRUN" == "1" ]]; then
+  dryrun_note "sudo chmod 755 $USR_LOCAL_BIN (currently $(stat -f '%Sp' "$USR_LOCAL_BIN"))"
+else
+  warn "$USR_LOCAL_BIN is $(stat -f '%Sp' "$USR_LOCAL_BIN") — its contents are hidden from you."
+  if sudo chmod 755 "$USR_LOCAL_BIN"; then
+    ok "Set $USR_LOCAL_BIN to 755"
+  else
+    warn "Could not chmod $USR_LOCAL_BIN."
+    pending "/usr/local/bin isn't traversable; run: sudo chmod 755 /usr/local/bin"
+  fi
+fi
+
+# ===========================================================================
 echo
 ok "Bootstrap complete."
 # Count first: expanding an empty array under `set -u` errors on macOS's bash 3.2.
