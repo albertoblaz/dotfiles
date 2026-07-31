@@ -80,10 +80,14 @@ ensure_traversable() {
   fi
 }
 
-# True (0) when the 1Password CLI is connected; probed once, then cached.
+# True (0) when the 1Password CLI is connected AND signed in; probed once, then
+# cached. `op vault list` rather than `op account list`: the latter succeeds as
+# soon as an account is registered, even while signed out, so it reports a
+# working CLI right up until the first read fails. Listing vaults is the
+# cheapest call that actually needs an authenticated session.
 op_connected() {
   [[ -n "${OP_CONNECTED:-}" ]] && return "$OP_CONNECTED"
-  if have op && op account list >/dev/null 2>&1; then OP_CONNECTED=0; else OP_CONNECTED=1; fi
+  if have op && op vault list >/dev/null 2>&1; then OP_CONNECTED=0; else OP_CONNECTED=1; fi
   return "$OP_CONNECTED"
 }
 
