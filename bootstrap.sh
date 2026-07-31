@@ -367,6 +367,121 @@ brew_install_each cask "${CASKS[@]}"
 ensure_traversable /usr/local/bin
 
 # ---------------------------------------------------------------------------
+# Rectangle — settings, including "Launch at login".
+#
+# The repo's plist is the source of truth; `defaults import` replaces the whole
+# domain. Two things make this less trivial than a file copy:
+#   - Rectangle has to be QUIT first. cfprefsd hands a running app its own
+#     cached copy of the domain, which gets flushed back over our import.
+#   - The plist only carries the launch-at-login *checkbox*. The real login-item
+#     registration lives in the SIP-protected Background Task Management store,
+#     which nothing here can write. Rectangle's checkLaunchOnLogin() runs on
+#     every launch and reconciles the two (pref on + not registered → register
+#     via SMAppService), so launching it once after the import is what actually
+#     arms it.
+# ---------------------------------------------------------------------------
+section "Rectangle"
+RECTANGLE_DOMAIN="com.knollsoft.Rectangle"
+RECTANGLE_PLIST_SRC="$DOTFILES_DIR/rectangle/$RECTANGLE_DOMAIN.plist"
+# Compare as a SUBSET, not an exact match: Rectangle writes its own bookkeeping
+# keys (lastVersion, SUHasLaunchedBefore…) on first run, so an exact diff would
+# never settle and we'd re-import — and stomp any later GUI tweaks — every run.
+rectangle_settings_applied() {
+  local src cur
+  # Read the live domain first: on a fresh machine it's unset, and an unset
+  # domain can't satisfy a non-empty subset — so bail before paying for the
+  # source conversion and jq.
+  cur="$(defaults export "$RECTANGLE_DOMAIN" - 2>/dev/null | plutil -convert json -o - - 2>/dev/null)" || return 1
+  [[ -n "$cur" && "$cur" != "{}" ]] || return 1
+  src="$(plutil -convert json -o - "$RECTANGLE_PLIST_SRC" 2>/dev/null)" || return 1
+  jq -n --argjson src "$src" --argjson cur "$cur" -e \
+    '$src | to_entries | all(.value == $cur[.key])' >/dev/null 2>&1
+}
+rectangle_running() { pgrep -x Rectangle >/dev/null 2>&1; }
+
+# Launch Rectangle so checkLaunchOnLogin() reconciles the launchOnLogin pref with
+# the login-item store, and flag the one-time Accessibility grant. Needed after an
+# import, but also when the domain already matches and the app simply isn't up.
+rectangle_arm_login_item() {
+  local marker="$MARKER_DIR/rectangle-accessibility-prompted"
+  if ! open -a Rectangle 2>/dev/null; then
+    warn "Could not launch Rectangle — open it once to arm launch-at-login."
+    return 0
+  fi
+  # One-time human step, and nothing here can read TCC to confirm it — so use the
+  # same marker mechanism as Chrome sign-in rather than nagging every run.
+  if [[ ! -f "$marker" ]]; then
+    mkdir -p "$MARKER_DIR"
+    touch "$marker"
+    pending "Rectangle: grant Accessibility access when prompted (System Settings → Privacy & Security → Accessibility)."
+  fi
+}
+
+if [[ ! -f "$RECTANGLE_PLIST_SRC" ]]; then
+  warn "No $RECTANGLE_PLIST_SRC in the repo — skipping Rectangle settings."
+elif [[ ! -d /Applications/Rectangle.app ]]; then
+  # No pending here: the cask failing to install is already reported by
+  # brew_install_each, and one root cause shouldn't take two lines in the summary.
+  warn "Rectangle.app not found — skipping its settings."
+elif [[ "$DRYRUN" == "1" ]]; then
+  dryrun_note "import $RECTANGLE_PLIST_SRC → $RECTANGLE_DOMAIN, then launch Rectangle once"
+elif ! have jq; then
+  warn "jq not available — import it manually: defaults import $RECTANGLE_DOMAIN $RECTANGLE_PLIST_SRC"
+elif rectangle_settings_applied; then
+  # Settings are in place, so there is nothing to import and nothing to back up.
+  # The only open question is the login item, and only a launch can settle that.
+  if rectangle_running; then
+    # Running on macOS 13+ means checkLaunchOnLogin() has already had its chance.
+    ok "Rectangle already configured"
+  else
+    ok "Rectangle settings already match the repo"
+    rectangle_arm_login_item
+  fi
+else
+  if rectangle_running; then
+    # Bounded: a bare `quit app` waits on the AppleEvent reply for AppleScript's
+    # default 120s, which would hang an unattended run behind a modal dialog.
+    osascript -e 'with timeout of 5 seconds' -e 'quit app "Rectangle"' -e 'end timeout' \
+      >/dev/null 2>&1 || pkill -x Rectangle || true
+    # ~5s ceiling — 50 polls of 0.1s plus a pgrep each. A quick quit costs ~0.1s.
+    for _ in {1..50}; do
+      rectangle_running || break
+      sleep 0.1
+    done
+  fi
+  if rectangle_running; then
+    # Importing now would be theatre: cfprefsd would flush the running app's
+    # cached domain back over it, and we'd have reported success for a no-op.
+    warn "Rectangle wouldn't quit — skipping the import, since cfprefsd would undo it."
+    pending "Rectangle: quit it by hand, then re-run ./bootstrap.sh to apply its settings."
+  else
+    # `defaults import` MERGES: keys the repo file doesn't carry are left alone
+    # (verified — Rectangle's own lastVersion/SUHasLaunchedBefore survive it).
+    # What it does overwrite is a UI change to a key the repo DOES carry, e.g. a
+    # shortcut retuned in Rectangle and never re-exported. Snapshot first so that
+    # is recoverable — same policy as agent.toml below.
+    RECTANGLE_BACKUP="$MARKER_DIR/$RECTANGLE_DOMAIN.plist.bak"
+    RECTANGLE_BACKED_UP=0
+    if defaults read "$RECTANGLE_DOMAIN" >/dev/null 2>&1; then
+      mkdir -p "$MARKER_DIR"
+      if defaults export "$RECTANGLE_DOMAIN" "$RECTANGLE_BACKUP" 2>/dev/null; then
+        RECTANGLE_BACKED_UP=1
+      fi
+    fi
+    if defaults import "$RECTANGLE_DOMAIN" "$RECTANGLE_PLIST_SRC"; then
+      ok "Imported Rectangle settings from the repo"
+      if [[ "$RECTANGLE_BACKED_UP" == "1" ]]; then
+        warn "Repo values overwrote the live ones — previous domain saved to $RECTANGLE_BACKUP"
+      fi
+      rectangle_arm_login_item
+    else
+      warn "Could not import $RECTANGLE_PLIST_SRC into $RECTANGLE_DOMAIN."
+      pending "Rectangle: settings import failed — enable 'Launch on login' in its preferences by hand."
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Dock — exact contents and order.
 # Finder and Trash aren't listed: macOS keeps them out of persistent-apps and
 # won't let them move. The divider before Downloads is drawn automatically
@@ -835,6 +950,42 @@ SSH_ITEM_TITLE="${SSH_ITEM_TITLE:-SSH: $HOST}"
 OP_SSH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 run mkdir -p "$HOME/.ssh"
 run chmod 700 "$HOME/.ssh"
+
+# ---------------------------------------------------------------------------
+# 1Password SSH agent — which vaults it serves.
+# By default the agent only offers keys from the default Personal/Private/
+# Employee vault, so a key kept anywhere else is invisible to ssh and the
+# connection falls through to a password prompt. agent.toml fixes that, but it
+# OVERRIDES the default wholesale — the agent then serves ONLY what the file
+# lists, which is why the everyday vault has to be listed explicitly too.
+# ---------------------------------------------------------------------------
+OP_AGENT_TOML="$HOME/.config/1Password/ssh/agent.toml"
+OP_AGENT_TOML_SRC="$DOTFILES_DIR/1password/agent.toml"
+if [[ ! -f "$OP_AGENT_TOML_SRC" ]]; then
+  warn "No $OP_AGENT_TOML_SRC in the repo — leaving the agent on its default vaults."
+elif [[ "$DRYRUN" == "1" ]]; then
+  dryrun_note "install $OP_AGENT_TOML_SRC → $OP_AGENT_TOML"
+elif cmp -s "$OP_AGENT_TOML_SRC" "$OP_AGENT_TOML" 2>/dev/null; then
+  ok "1Password agent.toml already matches the repo"
+else
+  # Back up a differing local copy rather than silently discarding it: this file
+  # is what makes non-default vaults reachable, and losing an entry shows up
+  # much later as an unexplained password prompt.
+  if [[ -f "$OP_AGENT_TOML" ]]; then
+    cp "$OP_AGENT_TOML" "$OP_AGENT_TOML.bak"
+    warn "Local agent.toml differed from the repo — kept a copy at $OP_AGENT_TOML.bak"
+    warn "  If the local one was right, copy it into $OP_AGENT_TOML_SRC and commit."
+  fi
+  mkdir -p "$(dirname "$OP_AGENT_TOML")"
+  cp "$OP_AGENT_TOML_SRC" "$OP_AGENT_TOML"
+  chmod 600 "$OP_AGENT_TOML"
+  ok "Installed 1Password agent.toml → $OP_AGENT_TOML"
+  # Troubleshooting advice, not outstanding work — so warn it here in context
+  # rather than adding a line to the "still needs you" summary. The agent
+  # re-reads agent.toml on its next request, but a running session can hold the
+  # old key list.
+  warn "  If ssh still can't see a key, quit and reopen 1Password."
+fi
 
 # Append a block to ~/.ssh/config once (idempotent, keyed by a unique marker).
 append_ssh_block() {  # <grep-marker> <block-text>
