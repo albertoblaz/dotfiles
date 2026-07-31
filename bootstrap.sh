@@ -52,6 +52,27 @@ load_brew_env() {
   return 1
 }
 
+# A root-owned directory that an installer created under a restrictive umask is
+# left mode 700, which hides everything inside it: `docker`, `kubectl` and
+# `tailscale` are all "command not found" even though the symlinks are present
+# and correct. Nothing self-heals it — later installers add links but never
+# chmod a directory they didn't create. Asks the question that matters (can I
+# traverse it?) rather than comparing a mode string, the same way the
+# ~/.local/bin check below asks a fresh shell instead of grepping. Quiet unless
+# there's something to fix, since it runs at more than one point in the script.
+ensure_traversable() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return 0                 # doesn't exist — nothing to fix
+  [[ -r "$dir" && -x "$dir" ]] && return 0
+  warn "$dir is $(stat -f '%Sp' "$dir") — its contents are hidden from you."
+  if run sudo chmod 755 "$dir"; then
+    [[ "$DRYRUN" == "1" ]] || ok "Set $dir to 755"
+  else
+    warn "Could not chmod $dir."
+    pending "$dir isn't traversable; run: sudo chmod 755 $dir"
+  fi
+}
+
 # True (0) when the 1Password CLI is connected; probed once, then cached.
 op_connected() {
   [[ -n "${OP_CONNECTED:-}" ]] && return "$OP_CONNECTED"
@@ -278,6 +299,11 @@ prime_sudo() {
 }
 prime_sudo || true
 
+# Before anything looks for a binary: an unreadable /usr/local/bin hides brew
+# itself on an Intel prefix, so every `have` below would answer "not installed"
+# and we'd re-run installers that already ran. Needs the sudo primed just above.
+ensure_traversable /usr/local/bin
+
 # ===========================================================================
 # A. Homebrew (also installs the Xcode Command Line Tools)
 # ===========================================================================
@@ -330,6 +356,8 @@ CASKS=(
 )
 info "Installing: ${CASKS[*]}"
 brew_install_each cask "${CASKS[@]}"
+# Again, in case a cask just created /usr/local/bin under its own umask.
+ensure_traversable /usr/local/bin
 
 # ---------------------------------------------------------------------------
 # Dock — exact contents and order.
@@ -976,42 +1004,6 @@ for repo in "${REPOS[@]}"; do
   fi
 done
 [[ ${#clone_pids[@]} -gt 0 ]] && wait "${clone_pids[@]}" 2>/dev/null || true
-
-# ===========================================================================
-# /usr/local/bin has to stay traversable
-# ===========================================================================
-# An installer that creates /usr/local/bin under a restrictive umask leaves it
-# mode 700 root:wheel, and every symlink inside becomes invisible to you:
-# `docker`, `kubectl` and `tailscale` are all "command not found" even though
-# the links are present and correct.
-#
-# Seen 2026-07-30 on this machine. The directory's btime matched the second
-# /usr/local/bin/1password-mcp was created, and that link's lrwx------ mode
-# records the creating process's 077 umask — every Docker-created link beside
-# it is lrwxr-xr-x (umask 022). Docker then added its symlinks to the
-# already-broken directory; installers don't chmod directories they didn't
-# create, so nothing self-heals. Not reported upstream anywhere I could find.
-#
-# Runs last so it also catches anything the cask installs above just created.
-# Tests behaviour (can I traverse it?) rather than comparing a mode string,
-# the same way the ~/.local/bin check asks a fresh shell instead of grepping.
-section "/usr/local/bin permissions"
-USR_LOCAL_BIN="/usr/local/bin"
-if [[ ! -d "$USR_LOCAL_BIN" ]]; then
-  ok "$USR_LOCAL_BIN doesn't exist — nothing to fix"
-elif [[ -r "$USR_LOCAL_BIN" && -x "$USR_LOCAL_BIN" ]]; then
-  ok "$USR_LOCAL_BIN is readable and traversable"
-elif [[ "$DRYRUN" == "1" ]]; then
-  dryrun_note "sudo chmod 755 $USR_LOCAL_BIN (currently $(stat -f '%Sp' "$USR_LOCAL_BIN"))"
-else
-  warn "$USR_LOCAL_BIN is $(stat -f '%Sp' "$USR_LOCAL_BIN") — its contents are hidden from you."
-  if sudo chmod 755 "$USR_LOCAL_BIN"; then
-    ok "Set $USR_LOCAL_BIN to 755"
-  else
-    warn "Could not chmod $USR_LOCAL_BIN."
-    pending "/usr/local/bin isn't traversable; run: sudo chmod 755 /usr/local/bin"
-  fi
-fi
 
 # ===========================================================================
 echo
