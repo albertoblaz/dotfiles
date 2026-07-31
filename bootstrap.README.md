@@ -83,9 +83,13 @@ a project's `.claude/settings.json`, so a repo can't grant itself auto mode.
 ### Rectangle
 
 Settings live in this repo at **`rectangle/com.knollsoft.Rectangle.plist`** and are
-applied with `defaults import`, which **replaces the whole preferences domain** — the
-repo file is the source of truth. Edit it here and re-run; the file's header has the
-re-export command if you changed something in Rectangle's UI instead.
+applied with `defaults import` — the repo file is the source of truth. Edit it here and
+re-run; the file's header has the re-export command if you changed something in
+Rectangle's UI instead.
+
+`defaults import` **merges**: a key the repo file doesn't carry is left alone, and a key
+it does carry is overwritten. So the risk isn't losing unrelated settings — it's a
+shortcut you retuned in the UI and never re-exported getting reset on the next run.
 
 Two things the script works around:
 
@@ -101,10 +105,15 @@ live domain, since Rectangle writes bookkeeping keys of its own (`lastVersion`,
 `SUHasLaunchedBefore`) on first run. Those aren't committed, so a fresh machine takes
 Rectangle's new-install path instead of replaying upgrade migrations.
 
-When an import *does* run, it takes the whole domain with it — a setting changed in
-Rectangle's UI but absent from the repo file is gone. Same policy as `agent.toml` below:
-the previous domain is exported to `~/.config/mac-bootstrap/com.knollsoft.Rectangle.plist.bak`
-first, so it's recoverable.
+When an import *does* run, the previous domain is exported to
+`~/.config/mac-bootstrap/com.knollsoft.Rectangle.plist.bak` first — same policy as
+`agent.toml` below — so an overwritten value is recoverable.
+
+If the settings already match and Rectangle simply isn't running, the script skips the
+import entirely and just launches it, since a launch is the only thing that can settle
+the login item. And if Rectangle won't quit, the import is **skipped** rather than
+attempted: `cfprefsd` would flush the running app's cached domain back over it, and the
+script would have reported success for a no-op. That case becomes a pending item.
 
 First launch prompts for **Accessibility** access, which can't be scripted — it's listed
 in the pending items **once**, then marker-gated

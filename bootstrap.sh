@@ -399,6 +399,24 @@ rectangle_settings_applied() {
 }
 rectangle_running() { pgrep -x Rectangle >/dev/null 2>&1; }
 
+# Launch Rectangle so checkLaunchOnLogin() reconciles the launchOnLogin pref with
+# the login-item store, and flag the one-time Accessibility grant. Needed after an
+# import, but also when the domain already matches and the app simply isn't up.
+rectangle_arm_login_item() {
+  local marker="$MARKER_DIR/rectangle-accessibility-prompted"
+  if ! open -a Rectangle 2>/dev/null; then
+    warn "Could not launch Rectangle — open it once to arm launch-at-login."
+    return 0
+  fi
+  # One-time human step, and nothing here can read TCC to confirm it — so use the
+  # same marker mechanism as Chrome sign-in rather than nagging every run.
+  if [[ ! -f "$marker" ]]; then
+    mkdir -p "$MARKER_DIR"
+    touch "$marker"
+    pending "Rectangle: grant Accessibility access when prompted (System Settings → Privacy & Security → Accessibility)."
+  fi
+}
+
 if [[ ! -f "$RECTANGLE_PLIST_SRC" ]]; then
   warn "No $RECTANGLE_PLIST_SRC in the repo — skipping Rectangle settings."
 elif [[ ! -d /Applications/Rectangle.app ]]; then
@@ -409,48 +427,54 @@ elif [[ "$DRYRUN" == "1" ]]; then
   dryrun_note "import $RECTANGLE_PLIST_SRC → $RECTANGLE_DOMAIN, then launch Rectangle once"
 elif ! have jq; then
   warn "jq not available — import it manually: defaults import $RECTANGLE_DOMAIN $RECTANGLE_PLIST_SRC"
-elif rectangle_settings_applied && rectangle_running; then
-  # Both halves matter: the settings are in place AND the app is running, which
-  # on macOS 13+ means checkLaunchOnLogin() has already had its chance to register.
-  ok "Rectangle already configured"
+elif rectangle_settings_applied; then
+  # Settings are in place, so there is nothing to import and nothing to back up.
+  # The only open question is the login item, and only a launch can settle that.
+  if rectangle_running; then
+    # Running on macOS 13+ means checkLaunchOnLogin() has already had its chance.
+    ok "Rectangle already configured"
+  else
+    ok "Rectangle settings already match the repo"
+    rectangle_arm_login_item
+  fi
 else
   if rectangle_running; then
     osascript -e 'quit app "Rectangle"' >/dev/null 2>&1 || pkill -x Rectangle || true
-    # Same 5s ceiling as a 10x0.5s poll, but a quick quit costs ~0.1s, not ~0.5s.
+    # ~5s ceiling — 50 polls of 0.1s plus a pgrep each. A quick quit costs ~0.1s.
     for _ in {1..50}; do
       rectangle_running || break
       sleep 0.1
     done
   fi
-  # `defaults import` replaces the WHOLE domain, so any GUI-only tweak to a key
-  # the repo file doesn't carry is about to go. Same policy as agent.toml below:
-  # keep a copy rather than discard it silently.
-  RECTANGLE_BACKUP="$MARKER_DIR/$RECTANGLE_DOMAIN.plist.bak"
-  RECTANGLE_BACKED_UP=0
-  if defaults read "$RECTANGLE_DOMAIN" >/dev/null 2>&1; then
-    mkdir -p "$MARKER_DIR"
-    if defaults export "$RECTANGLE_DOMAIN" "$RECTANGLE_BACKUP" 2>/dev/null; then
-      RECTANGLE_BACKED_UP=1
-    fi
-  fi
-  if defaults import "$RECTANGLE_DOMAIN" "$RECTANGLE_PLIST_SRC"; then
-    ok "Imported Rectangle settings from the repo"
-    if [[ "$RECTANGLE_BACKED_UP" == "1" ]]; then
-      warn "Replaced the whole preferences domain — previous settings kept at $RECTANGLE_BACKUP"
-    fi
-    # Relaunch so Rectangle picks up the imported prefs and registers the login item.
-    open -a Rectangle 2>/dev/null || warn "Could not launch Rectangle — open it once to arm launch-at-login."
-    # One-time human step, and nothing here can read TCC to confirm it — so use
-    # the same marker mechanism as Chrome sign-in rather than nagging every run.
-    RECTANGLE_A11Y_MARKER="$MARKER_DIR/rectangle-accessibility-prompted"
-    if [[ ! -f "$RECTANGLE_A11Y_MARKER" ]]; then
-      mkdir -p "$MARKER_DIR"
-      touch "$RECTANGLE_A11Y_MARKER"
-      pending "Rectangle: grant Accessibility access when prompted (System Settings → Privacy & Security → Accessibility)."
-    fi
+  if rectangle_running; then
+    # Importing now would be theatre: cfprefsd would flush the running app's
+    # cached domain back over it, and we'd have reported success for a no-op.
+    warn "Rectangle wouldn't quit — skipping the import, since cfprefsd would undo it."
+    pending "Rectangle: quit it by hand, then re-run ./bootstrap.sh to apply its settings."
   else
-    warn "Could not import $RECTANGLE_PLIST_SRC into $RECTANGLE_DOMAIN."
-    pending "Rectangle: settings import failed — enable 'Launch on login' in its preferences by hand."
+    # `defaults import` MERGES: keys the repo file doesn't carry are left alone
+    # (verified — Rectangle's own lastVersion/SUHasLaunchedBefore survive it).
+    # What it does overwrite is a UI change to a key the repo DOES carry, e.g. a
+    # shortcut retuned in Rectangle and never re-exported. Snapshot first so that
+    # is recoverable — same policy as agent.toml below.
+    RECTANGLE_BACKUP="$MARKER_DIR/$RECTANGLE_DOMAIN.plist.bak"
+    RECTANGLE_BACKED_UP=0
+    if defaults read "$RECTANGLE_DOMAIN" >/dev/null 2>&1; then
+      mkdir -p "$MARKER_DIR"
+      if defaults export "$RECTANGLE_DOMAIN" "$RECTANGLE_BACKUP" 2>/dev/null; then
+        RECTANGLE_BACKED_UP=1
+      fi
+    fi
+    if defaults import "$RECTANGLE_DOMAIN" "$RECTANGLE_PLIST_SRC"; then
+      ok "Imported Rectangle settings from the repo"
+      if [[ "$RECTANGLE_BACKED_UP" == "1" ]]; then
+        warn "Repo values overwrote the live ones — previous domain saved to $RECTANGLE_BACKUP"
+      fi
+      rectangle_arm_login_item
+    else
+      warn "Could not import $RECTANGLE_PLIST_SRC into $RECTANGLE_DOMAIN."
+      pending "Rectangle: settings import failed — enable 'Launch on login' in its preferences by hand."
+    fi
   fi
 fi
 
