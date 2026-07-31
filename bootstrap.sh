@@ -439,7 +439,10 @@ elif rectangle_settings_applied; then
   fi
 else
   if rectangle_running; then
-    osascript -e 'quit app "Rectangle"' >/dev/null 2>&1 || pkill -x Rectangle || true
+    # Bounded: a bare `quit app` waits on the AppleEvent reply for AppleScript's
+    # default 120s, which would hang an unattended run behind a modal dialog.
+    osascript -e 'with timeout of 5 seconds' -e 'quit app "Rectangle"' -e 'end timeout' \
+      >/dev/null 2>&1 || pkill -x Rectangle || true
     # ~5s ceiling — 50 polls of 0.1s plus a pgrep each. A quick quit costs ~0.1s.
     for _ in {1..50}; do
       rectangle_running || break
