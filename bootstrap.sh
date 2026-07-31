@@ -58,14 +58,21 @@ load_brew_env() {
 # and correct. Nothing self-heals it — later installers add links but never
 # chmod a directory they didn't create. Asks the question that matters (can I
 # traverse it?) rather than comparing a mode string, the same way the
-# ~/.local/bin check below asks a fresh shell instead of grepping. Quiet unless
-# there's something to fix, since it runs at more than one point in the script.
+# ~/.local/bin check below asks a fresh shell instead of grepping.
+#
+# Deliberately says NOTHING on the happy path — no "✓ already traversable".
+# It's called at more than one point, so a success line would print twice on
+# every healthy run to report that nothing happened. Only the broken path is
+# worth output. Don't add one.
 ensure_traversable() {
   local dir="$1"
   [[ -d "$dir" ]] || return 0                 # doesn't exist — nothing to fix
   [[ -r "$dir" && -x "$dir" ]] && return 0
   warn "$dir is $(stat -f '%Sp' "$dir") — its contents are hidden from you."
   if run sudo chmod 755 "$dir"; then
+    # run() only *prints* the command under DRYRUN, so it reports success
+    # without having chmod'd anything — hence the guard, or a dry run would
+    # claim it set a mode it didn't touch.
     [[ "$DRYRUN" == "1" ]] || ok "Set $dir to 755"
   else
     warn "Could not chmod $dir."
