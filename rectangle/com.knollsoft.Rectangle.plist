@@ -14,11 +14,9 @@
                                     omit: SUEnableAutomaticChecks below is set
                                     explicitly, so Sparkle won't ask.
 
-  launchOnLogin only drives the *checkbox*. The actual login-item registration
-  lives in the SIP-protected Background Task Management store and cannot be
-  seeded from a file — Rectangle's checkLaunchOnLogin() reads this key at
-  startup and registers itself via SMAppService, which is why bootstrap.sh
-  launches the app after importing.
+  launchOnLogin is only the *checkbox*; bootstrap.sh launches Rectangle after
+  importing so checkLaunchOnLogin() registers the real login item. Why that is
+  needed: bootstrap.README.md § Rectangle.
 
   keyCode/modifierFlags are Carbon virtual key codes and NSEvent modifier
   masks. 786432 = control (0x40000) + option (0x80000).
@@ -29,7 +27,8 @@
     defaults export com.knollsoft.Rectangle - \
       | plutil -convert xml1 -o - - \
       > rectangle/com.knollsoft.Rectangle.plist
-  then delete installVersion, lastVersion and SUHasLaunchedBefore again.
+  That export drops this header — re-attach it, and delete installVersion,
+  lastVersion and SUHasLaunchedBefore again, before committing.
 -->
 <plist version="1.0">
 <dict>

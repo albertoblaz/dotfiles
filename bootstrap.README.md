@@ -101,8 +101,15 @@ live domain, since Rectangle writes bookkeeping keys of its own (`lastVersion`,
 `SUHasLaunchedBefore`) on first run. Those aren't committed, so a fresh machine takes
 Rectangle's new-install path instead of replaying upgrade migrations.
 
+When an import *does* run, it takes the whole domain with it — a setting changed in
+Rectangle's UI but absent from the repo file is gone. Same policy as `agent.toml` below:
+the previous domain is exported to `~/.config/mac-bootstrap/com.knollsoft.Rectangle.plist.bak`
+first, so it's recoverable.
+
 First launch prompts for **Accessibility** access, which can't be scripted — it's listed
-in the pending items.
+in the pending items **once**, then marker-gated
+(`~/.config/mac-bootstrap/rectangle-accessibility-prompted`) like the Chrome sign-in, so a
+grant given months ago doesn't keep reappearing as outstanding work.
 
 ### Chrome sign-in
 

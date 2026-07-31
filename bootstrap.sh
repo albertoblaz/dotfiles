@@ -388,41 +388,66 @@ RECTANGLE_PLIST_SRC="$DOTFILES_DIR/rectangle/$RECTANGLE_DOMAIN.plist"
 # never settle and we'd re-import — and stomp any later GUI tweaks — every run.
 rectangle_settings_applied() {
   local src cur
+  # Read the live domain first: on a fresh machine it's unset, and an unset
+  # domain can't satisfy a non-empty subset — so bail before paying for the
+  # source conversion and jq.
+  cur="$(defaults export "$RECTANGLE_DOMAIN" - 2>/dev/null | plutil -convert json -o - - 2>/dev/null)" || return 1
+  [[ -n "$cur" && "$cur" != "{}" ]] || return 1
   src="$(plutil -convert json -o - "$RECTANGLE_PLIST_SRC" 2>/dev/null)" || return 1
-  [[ -n "$src" ]] || return 1
-  # An unset domain exports as an empty dict, so this stays a clean "no match".
-  cur="$(defaults export "$RECTANGLE_DOMAIN" - 2>/dev/null | plutil -convert json -o - - 2>/dev/null || true)"
-  [[ -n "$cur" ]] || cur='{}'
   jq -n --argjson src "$src" --argjson cur "$cur" -e \
     '$src | to_entries | all(.value == $cur[.key])' >/dev/null 2>&1
 }
+rectangle_running() { pgrep -x Rectangle >/dev/null 2>&1; }
 
 if [[ ! -f "$RECTANGLE_PLIST_SRC" ]]; then
   warn "No $RECTANGLE_PLIST_SRC in the repo — skipping Rectangle settings."
 elif [[ ! -d /Applications/Rectangle.app ]]; then
+  # No pending here: the cask failing to install is already reported by
+  # brew_install_each, and one root cause shouldn't take two lines in the summary.
   warn "Rectangle.app not found — skipping its settings."
-  pending "Rectangle: not installed, so its settings (incl. launch at login) weren't applied."
 elif [[ "$DRYRUN" == "1" ]]; then
   dryrun_note "import $RECTANGLE_PLIST_SRC → $RECTANGLE_DOMAIN, then launch Rectangle once"
 elif ! have jq; then
   warn "jq not available — import it manually: defaults import $RECTANGLE_DOMAIN $RECTANGLE_PLIST_SRC"
-elif rectangle_settings_applied && pgrep -x Rectangle >/dev/null 2>&1; then
+elif rectangle_settings_applied && rectangle_running; then
   # Both halves matter: the settings are in place AND the app is running, which
   # on macOS 13+ means checkLaunchOnLogin() has already had its chance to register.
   ok "Rectangle already configured"
 else
-  if pgrep -x Rectangle >/dev/null 2>&1; then
+  if rectangle_running; then
     osascript -e 'quit app "Rectangle"' >/dev/null 2>&1 || pkill -x Rectangle || true
-    for _ in $(seq 1 10); do
-      pgrep -x Rectangle >/dev/null 2>&1 || break
-      sleep 0.5
+    # Same 5s ceiling as a 10x0.5s poll, but a quick quit costs ~0.1s, not ~0.5s.
+    for _ in {1..50}; do
+      rectangle_running || break
+      sleep 0.1
     done
+  fi
+  # `defaults import` replaces the WHOLE domain, so any GUI-only tweak to a key
+  # the repo file doesn't carry is about to go. Same policy as agent.toml below:
+  # keep a copy rather than discard it silently.
+  RECTANGLE_BACKUP="$MARKER_DIR/$RECTANGLE_DOMAIN.plist.bak"
+  RECTANGLE_BACKED_UP=0
+  if defaults read "$RECTANGLE_DOMAIN" >/dev/null 2>&1; then
+    mkdir -p "$MARKER_DIR"
+    if defaults export "$RECTANGLE_DOMAIN" "$RECTANGLE_BACKUP" 2>/dev/null; then
+      RECTANGLE_BACKED_UP=1
+    fi
   fi
   if defaults import "$RECTANGLE_DOMAIN" "$RECTANGLE_PLIST_SRC"; then
     ok "Imported Rectangle settings from the repo"
+    if [[ "$RECTANGLE_BACKED_UP" == "1" ]]; then
+      warn "Replaced the whole preferences domain — previous settings kept at $RECTANGLE_BACKUP"
+    fi
     # Relaunch so Rectangle picks up the imported prefs and registers the login item.
     open -a Rectangle 2>/dev/null || warn "Could not launch Rectangle — open it once to arm launch-at-login."
-    pending "Rectangle: grant Accessibility access when prompted (System Settings → Privacy & Security → Accessibility)."
+    # One-time human step, and nothing here can read TCC to confirm it — so use
+    # the same marker mechanism as Chrome sign-in rather than nagging every run.
+    RECTANGLE_A11Y_MARKER="$MARKER_DIR/rectangle-accessibility-prompted"
+    if [[ ! -f "$RECTANGLE_A11Y_MARKER" ]]; then
+      mkdir -p "$MARKER_DIR"
+      touch "$RECTANGLE_A11Y_MARKER"
+      pending "Rectangle: grant Accessibility access when prompted (System Settings → Privacy & Security → Accessibility)."
+    fi
   else
     warn "Could not import $RECTANGLE_PLIST_SRC into $RECTANGLE_DOMAIN."
     pending "Rectangle: settings import failed — enable 'Launch on login' in its preferences by hand."
@@ -927,10 +952,12 @@ else
   mkdir -p "$(dirname "$OP_AGENT_TOML")"
   cp "$OP_AGENT_TOML_SRC" "$OP_AGENT_TOML"
   chmod 600 "$OP_AGENT_TOML"
-  ok "Installed 1Password agent.toml ($(grep -c '^\[\[ssh-keys\]\]' "$OP_AGENT_TOML") vault entries)"
-  # The agent re-reads agent.toml on its next request, but a running ssh-agent
-  # session can hold the old key list — hence the nudge rather than a claim.
-  pending "1Password: agent.toml changed — if ssh still can't see a key, quit and reopen 1Password."
+  ok "Installed 1Password agent.toml → $OP_AGENT_TOML"
+  # Troubleshooting advice, not outstanding work — so warn it here in context
+  # rather than adding a line to the "still needs you" summary. The agent
+  # re-reads agent.toml on its next request, but a running session can hold the
+  # old key list.
+  warn "  If ssh still can't see a key, quit and reopen 1Password."
 fi
 
 # Append a block to ~/.ssh/config once (idempotent, keyed by a unique marker).

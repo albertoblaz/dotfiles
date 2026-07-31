@@ -4,17 +4,13 @@
 # the source of truth — edit it here and re-run ./bootstrap.sh, rather than
 # editing the installed file, so there is only ever one authored version.
 #
-# Without this file the agent only serves keys from the default Personal /
-# Private / Employee vault. A key kept in any other vault is never offered, so
-# ssh silently falls through to a password prompt — which looks like a broken
-# key rather than a config problem, and is why this file exists.
+# THE TRAP: this file OVERRIDES the agent's default vault list rather than
+# extending it — the agent serves ONLY what is listed below. That is why the
+# everyday Personal vault is listed explicitly; drop it and the GitHub key stops
+# being served, which breaks git over SSH.
 #
-# Creating this file OVERRIDES that default entirely: the agent now serves ONLY
-# what is listed below. That is why Personal is listed explicitly — drop it and
-# the GitHub key stops being served, which breaks git over SSH.
-#
-# NOTE: this repo is PUBLIC. Vault names are fine here; keep hostnames, IPs and
-# other deployment details out of these comments.
+# Why this file exists at all, and what may go in it given the repo is public:
+# see bootstrap.README.md § "1Password SSH agent — which vaults it serves".
 
 [[ssh-keys]]
 vault = "Personal"
