@@ -949,7 +949,12 @@ fi
 # IdentityFile and the GitHub upload. Falls back to an on-disk key + Keychain
 # when op isn't available.
 section "SSH key (1Password SSH agent)"
-SSH_KEY="$HOME/.ssh/id_ed25519"
+# Named for its purpose rather than its algorithm. `id_ed25519` is only special
+# as OpenSSH's default-lookup filename, and every Host block here sets
+# IdentityFile explicitly, so the default buys nothing. Purpose-named keys stay
+# readable in ~/.ssh and in a server's authorized_keys once there is more than
+# one of them.
+SSH_KEY="$HOME/.ssh/github"
 SSH_ITEM_TITLE="${SSH_ITEM_TITLE:-SSH: $HOST}"
 OP_SSH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 run mkdir -p "$HOME/.ssh"
@@ -1085,7 +1090,7 @@ else
     gh_authed=1
   else
     info "gh is not authenticated — starting 'gh auth login'…"
-    info "Suggested answers: github.com · SSH · your ~/.ssh/id_ed25519 key · title 'gh' · authenticate with your PAT."
+    info "Suggested answers: github.com · SSH · your ${SSH_KEY} key · title 'gh' · authenticate with your PAT."
     gh auth login || warn "gh auth login was cancelled or failed."
     gh auth status >/dev/null 2>&1 && gh_authed=1 || gh_authed=0
   fi

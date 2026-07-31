@@ -215,7 +215,7 @@ summary lists only work that genuinely **outlives** the script, and says
   so racing ahead just produced failed clones.
 - **GitHub SSH key** — if `gh` isn't authenticated, the script **runs `gh auth
   login`** so you're prompted through it. Suggested answers: **github.com · SSH ·
-  your `~/.ssh/id_ed25519` key · title `gh` · authenticate with your PAT**. Your
+  your `~/.ssh/github` key · title `gh` · authenticate with your PAT**. Your
   PAT (from 1Password) just needs the **`write:public_key`** (`admin:public_key`)
   scope — no `--scopes` flag is needed, since token scopes come from the PAT.
   Choosing SSH during login uploads the key directly; the script's follow-up add
@@ -238,7 +238,7 @@ Uses the **1Password SSH agent** — the private key never touches disk.
    an SSH Key item (desktop-app only), so generating it there is the way to get the
    right item type. Idempotent: skips if the item already exists. Defaults to the
    `Personal` vault; set `OP_VAULT=…` to override.
-2. Pulls **only the public key** to `~/.ssh/id_ed25519.pub` (for the ssh-config
+2. Pulls **only the public key** to `~/.ssh/github.pub` (for the ssh-config
    `IdentityFile` and the GitHub upload), and writes `~/.ssh/config` to point at the
    1Password agent socket with a `Host github.com` block (`IdentitiesOnly yes` +
    that one `IdentityFile`) so GitHub authorizes **once per session, not per key**.
