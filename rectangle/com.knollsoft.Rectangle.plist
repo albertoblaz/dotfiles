@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Rectangle settings, imported by bootstrap.sh into the com.knollsoft.Rectangle
+  preferences domain (`defaults import`).
+
+  Only durable *preferences* live here. Rectangle's own bookkeeping keys are
+  deliberately omitted so a fresh machine takes its normal first-run path:
+    installVersion / lastVersion  — absent lastVersion means "new install", so
+                                    Rectangle skips the version migrations
+                                    (MASShortcutMigration, SnapAreaModel, …)
+                                    that only apply to upgraded configs.
+    SUHasLaunchedBefore           — Sparkle's first-launch flag. Harmless to
+                                    omit: SUEnableAutomaticChecks below is set
+                                    explicitly, so Sparkle won't ask.
+
+  launchOnLogin only drives the *checkbox*. The actual login-item registration
+  lives in the SIP-protected Background Task Management store and cannot be
+  seeded from a file — Rectangle's checkLaunchOnLogin() reads this key at
+  startup and registers itself via SMAppService, which is why bootstrap.sh
+  launches the app after importing.
+
+  keyCode/modifierFlags are Carbon virtual key codes and NSEvent modifier
+  masks. 786432 = control (0x40000) + option (0x80000).
+    toggleTodo: keyCode 11 = B  → ctrl+opt+B
+    reflowTodo: keyCode 45 = N  → ctrl+opt+N
+
+  To refresh from the current machine:
+    defaults export com.knollsoft.Rectangle - \
+      | plutil -convert xml1 -o - - \
+      > rectangle/com.knollsoft.Rectangle.plist
+  then delete installVersion, lastVersion and SUHasLaunchedBefore again.
+-->
+<plist version="1.0">
+<dict>
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
+	<key>allowAnyShortcut</key>
+	<true/>
+	<key>alternateDefaultShortcuts</key>
+	<true/>
+	<key>internalTilingNotified</key>
+	<true/>
+	<key>launchOnLogin</key>
+	<true/>
+	<key>reflowTodo</key>
+	<dict>
+		<key>keyCode</key>
+		<integer>45</integer>
+		<key>modifierFlags</key>
+		<integer>786432</integer>
+	</dict>
+	<key>subsequentExecutionMode</key>
+	<integer>1</integer>
+	<key>toggleTodo</key>
+	<dict>
+		<key>keyCode</key>
+		<integer>11</integer>
+		<key>modifierFlags</key>
+		<integer>786432</integer>
+	</dict>
+</dict>
+</plist>

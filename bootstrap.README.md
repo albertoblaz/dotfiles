@@ -30,9 +30,11 @@ where no formula exists: **Claude Code**, **rtk**, **oh-my-zsh**.
 | Runtime manager | mise + a global Node (LTS) and **gws** (`@googleworkspace/cli`) |
 | git config | copies the repo's `.gitconfig` to `~/.gitconfig`, filling the email placeholder |
 | Claude Code | merges the repo's `claude/settings.json` into `~/.claude/settings.json` (auto mode by default) |
+| Rectangle | imports the repo's `rectangle/com.knollsoft.Rectangle.plist`, then launches the app so it arms **Launch at login** |
 | Apple toolchain | Xcode Command Line Tools, full Xcode (**Mac App Store**), iOS simulator runtime |
 | Snippets | pet config fetched from this repo + token from 1Password + `pet sync` |
 | SSH | key **generated in 1Password** (SSH Key item), served by the **1Password SSH agent** (private key never on disk), **registered on GitHub** |
+| 1Password agent | installs the repo's `1password/agent.toml` so the agent also serves keys from **non-default vaults** |
 | Workspace | `~/git/` + clones my repos (see below) |
 | Dock | pinned to an exact list and order — **replaces** whatever is pinned, including the macOS defaults |
 
@@ -77,6 +79,30 @@ no-op once applied. To change a Claude Code default on every machine, edit
 It ships `permissions.defaultMode: "auto"` — **auto mode by default**. That has to
 go in **user** settings: since v2.1.142 Claude Code ignores `defaultMode: "auto"` in
 a project's `.claude/settings.json`, so a repo can't grant itself auto mode.
+
+### Rectangle
+
+Settings live in this repo at **`rectangle/com.knollsoft.Rectangle.plist`** and are
+applied with `defaults import`, which **replaces the whole preferences domain** — the
+repo file is the source of truth. Edit it here and re-run; the file's header has the
+re-export command if you changed something in Rectangle's UI instead.
+
+Two things the script works around:
+
+- **Rectangle is quit before the import.** `cfprefsd` serves a running app its own
+  cached copy of the domain and flushes it back on quit, undoing the import.
+- **"Launch at login" is not fully a file.** `launchOnLogin` is only the checkbox; the
+  login item itself is registered in macOS's Background Task Management store, which is
+  SIP-protected. Rectangle's `checkLaunchOnLogin()` reconciles the two at startup, so
+  the script **launches Rectangle once after importing** — that's what arms it.
+
+Re-runs are a no-op. The idempotency check treats the repo's keys as a **subset** of the
+live domain, since Rectangle writes bookkeeping keys of its own (`lastVersion`,
+`SUHasLaunchedBefore`) on first run. Those aren't committed, so a fresh machine takes
+Rectangle's new-install path instead of replaying upgrade migrations.
+
+First launch prompts for **Accessibility** access, which can't be scripted — it's listed
+in the pending items.
 
 ### Chrome sign-in
 
@@ -179,6 +205,10 @@ summary lists only work that genuinely **outlives** the script, and says
   Choosing SSH during login uploads the key directly; the script's follow-up add
   then reports "already registered" instead of erroring.
 - **Chrome sign-in** — a one-time browser step.
+- **Rectangle Accessibility access** — the script imports Rectangle's settings and
+  launches it, but macOS only grants Accessibility on an explicit user approval
+  (System Settings ▸ Privacy & Security ▸ Accessibility). Until then Rectangle
+  can't move windows. Launch-at-login itself needs no approval.
 
 All pauses are guarded by a `[[ -t 0 ]]` check, so an unattended run never hangs —
 it warns and carries on.
@@ -205,6 +235,26 @@ Uses the **1Password SSH agent** — the private key never touches disk.
    retry/skip prompt on failure. This also front-loads the 1Password approval onto
    one foreground connection instead of racing it against seven parallel clones.
 5. Clones the repos over SSH — **skipping any repo already present in `~/git/`**.
+
+## 1Password SSH agent — which vaults it serves
+
+By default the agent only offers keys from the **default** Personal / Private /
+Employee vault. A key kept in any other vault is simply never offered, and ssh then
+falls through to a password prompt — which reads like a broken key rather than a
+config problem. `~/.config/1Password/ssh/agent.toml` is what widens that.
+
+The repo's **`1password/agent.toml`** is the source of truth; the script installs it
+(mode 600). The trap the file's own header calls out: creating it **overrides the
+default wholesale** — the agent then serves *only* what's listed, so the everyday vault
+has to be listed explicitly. Drop it and git over SSH breaks.
+
+Edit the repo copy and re-run `./bootstrap.sh`, not the installed file. If the installed
+file has diverged anyway, the script backs it up to `agent.toml.bak` rather than
+silently overwriting it, so a hand-added vault entry isn't lost.
+
+**What's public:** vault *names* only. No keys, no fingerprints, no item or host names.
+Keep it that way — no hostnames or IPs in the comments, even to explain why a vault is
+listed.
 
 ## Security note — pet token
 

@@ -1,0 +1,23 @@
+# 1Password SSH agent — which vaults' SSH keys get exposed to ssh.
+#
+# Installed to ~/.config/1Password/ssh/agent.toml by bootstrap.sh. THIS copy is
+# the source of truth — edit it here and re-run ./bootstrap.sh, rather than
+# editing the installed file, so there is only ever one authored version.
+#
+# Without this file the agent only serves keys from the default Personal /
+# Private / Employee vault. A key kept in any other vault is never offered, so
+# ssh silently falls through to a password prompt — which looks like a broken
+# key rather than a config problem, and is why this file exists.
+#
+# Creating this file OVERRIDES that default entirely: the agent now serves ONLY
+# what is listed below. That is why Personal is listed explicitly — drop it and
+# the GitHub key stops being served, which breaks git over SSH.
+#
+# NOTE: this repo is PUBLIC. Vault names are fine here; keep hostnames, IPs and
+# other deployment details out of these comments.
+
+[[ssh-keys]]
+vault = "Personal"
+
+[[ssh-keys]]
+vault = "Golden Gamers Go"

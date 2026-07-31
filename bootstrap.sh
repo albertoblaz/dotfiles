@@ -367,6 +367,69 @@ brew_install_each cask "${CASKS[@]}"
 ensure_traversable /usr/local/bin
 
 # ---------------------------------------------------------------------------
+# Rectangle — settings, including "Launch at login".
+#
+# The repo's plist is the source of truth; `defaults import` replaces the whole
+# domain. Two things make this less trivial than a file copy:
+#   - Rectangle has to be QUIT first. cfprefsd hands a running app its own
+#     cached copy of the domain, which gets flushed back over our import.
+#   - The plist only carries the launch-at-login *checkbox*. The real login-item
+#     registration lives in the SIP-protected Background Task Management store,
+#     which nothing here can write. Rectangle's checkLaunchOnLogin() runs on
+#     every launch and reconciles the two (pref on + not registered → register
+#     via SMAppService), so launching it once after the import is what actually
+#     arms it.
+# ---------------------------------------------------------------------------
+section "Rectangle"
+RECTANGLE_DOMAIN="com.knollsoft.Rectangle"
+RECTANGLE_PLIST_SRC="$DOTFILES_DIR/rectangle/$RECTANGLE_DOMAIN.plist"
+# Compare as a SUBSET, not an exact match: Rectangle writes its own bookkeeping
+# keys (lastVersion, SUHasLaunchedBefore…) on first run, so an exact diff would
+# never settle and we'd re-import — and stomp any later GUI tweaks — every run.
+rectangle_settings_applied() {
+  local src cur
+  src="$(plutil -convert json -o - "$RECTANGLE_PLIST_SRC" 2>/dev/null)" || return 1
+  [[ -n "$src" ]] || return 1
+  # An unset domain exports as an empty dict, so this stays a clean "no match".
+  cur="$(defaults export "$RECTANGLE_DOMAIN" - 2>/dev/null | plutil -convert json -o - - 2>/dev/null || true)"
+  [[ -n "$cur" ]] || cur='{}'
+  jq -n --argjson src "$src" --argjson cur "$cur" -e \
+    '$src | to_entries | all(.value == $cur[.key])' >/dev/null 2>&1
+}
+
+if [[ ! -f "$RECTANGLE_PLIST_SRC" ]]; then
+  warn "No $RECTANGLE_PLIST_SRC in the repo — skipping Rectangle settings."
+elif [[ ! -d /Applications/Rectangle.app ]]; then
+  warn "Rectangle.app not found — skipping its settings."
+  pending "Rectangle: not installed, so its settings (incl. launch at login) weren't applied."
+elif [[ "$DRYRUN" == "1" ]]; then
+  dryrun_note "import $RECTANGLE_PLIST_SRC → $RECTANGLE_DOMAIN, then launch Rectangle once"
+elif ! have jq; then
+  warn "jq not available — import it manually: defaults import $RECTANGLE_DOMAIN $RECTANGLE_PLIST_SRC"
+elif rectangle_settings_applied && pgrep -x Rectangle >/dev/null 2>&1; then
+  # Both halves matter: the settings are in place AND the app is running, which
+  # on macOS 13+ means checkLaunchOnLogin() has already had its chance to register.
+  ok "Rectangle already configured"
+else
+  if pgrep -x Rectangle >/dev/null 2>&1; then
+    osascript -e 'quit app "Rectangle"' >/dev/null 2>&1 || pkill -x Rectangle || true
+    for _ in $(seq 1 10); do
+      pgrep -x Rectangle >/dev/null 2>&1 || break
+      sleep 0.5
+    done
+  fi
+  if defaults import "$RECTANGLE_DOMAIN" "$RECTANGLE_PLIST_SRC"; then
+    ok "Imported Rectangle settings from the repo"
+    # Relaunch so Rectangle picks up the imported prefs and registers the login item.
+    open -a Rectangle 2>/dev/null || warn "Could not launch Rectangle — open it once to arm launch-at-login."
+    pending "Rectangle: grant Accessibility access when prompted (System Settings → Privacy & Security → Accessibility)."
+  else
+    warn "Could not import $RECTANGLE_PLIST_SRC into $RECTANGLE_DOMAIN."
+    pending "Rectangle: settings import failed — enable 'Launch on login' in its preferences by hand."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Dock — exact contents and order.
 # Finder and Trash aren't listed: macOS keeps them out of persistent-apps and
 # won't let them move. The divider before Downloads is drawn automatically
@@ -835,6 +898,40 @@ SSH_ITEM_TITLE="${SSH_ITEM_TITLE:-SSH: $HOST}"
 OP_SSH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 run mkdir -p "$HOME/.ssh"
 run chmod 700 "$HOME/.ssh"
+
+# ---------------------------------------------------------------------------
+# 1Password SSH agent — which vaults it serves.
+# By default the agent only offers keys from the default Personal/Private/
+# Employee vault, so a key kept anywhere else is invisible to ssh and the
+# connection falls through to a password prompt. agent.toml fixes that, but it
+# OVERRIDES the default wholesale — the agent then serves ONLY what the file
+# lists, which is why the everyday vault has to be listed explicitly too.
+# ---------------------------------------------------------------------------
+OP_AGENT_TOML="$HOME/.config/1Password/ssh/agent.toml"
+OP_AGENT_TOML_SRC="$DOTFILES_DIR/1password/agent.toml"
+if [[ ! -f "$OP_AGENT_TOML_SRC" ]]; then
+  warn "No $OP_AGENT_TOML_SRC in the repo — leaving the agent on its default vaults."
+elif [[ "$DRYRUN" == "1" ]]; then
+  dryrun_note "install $OP_AGENT_TOML_SRC → $OP_AGENT_TOML"
+elif cmp -s "$OP_AGENT_TOML_SRC" "$OP_AGENT_TOML" 2>/dev/null; then
+  ok "1Password agent.toml already matches the repo"
+else
+  # Back up a differing local copy rather than silently discarding it: this file
+  # is what makes non-default vaults reachable, and losing an entry shows up
+  # much later as an unexplained password prompt.
+  if [[ -f "$OP_AGENT_TOML" ]]; then
+    cp "$OP_AGENT_TOML" "$OP_AGENT_TOML.bak"
+    warn "Local agent.toml differed from the repo — kept a copy at $OP_AGENT_TOML.bak"
+    warn "  If the local one was right, copy it into $OP_AGENT_TOML_SRC and commit."
+  fi
+  mkdir -p "$(dirname "$OP_AGENT_TOML")"
+  cp "$OP_AGENT_TOML_SRC" "$OP_AGENT_TOML"
+  chmod 600 "$OP_AGENT_TOML"
+  ok "Installed 1Password agent.toml ($(grep -c '^\[\[ssh-keys\]\]' "$OP_AGENT_TOML") vault entries)"
+  # The agent re-reads agent.toml on its next request, but a running ssh-agent
+  # session can hold the old key list — hence the nudge rather than a claim.
+  pending "1Password: agent.toml changed — if ssh still can't see a key, quit and reopen 1Password."
+fi
 
 # Append a block to ~/.ssh/config once (idempotent, keyed by a unique marker).
 append_ssh_block() {  # <grep-marker> <block-text>
