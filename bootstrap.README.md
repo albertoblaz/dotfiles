@@ -33,8 +33,7 @@ where no formula exists: **Claude Code**, **rtk**, **oh-my-zsh**.
 | Rectangle | imports the repo's `rectangle/com.knollsoft.Rectangle.plist`, then launches the app so it arms **Launch at login** |
 | Apple toolchain | Xcode Command Line Tools, full Xcode (**Mac App Store**), iOS simulator runtime |
 | Snippets | pet config fetched from this repo + token from 1Password + `pet sync` |
-| SSH | key **generated in 1Password** (SSH Key item), served by the **1Password SSH agent** (private key never on disk), **registered on GitHub** |
-| 1Password agent | installs the repo's `1password/agent.toml` so the agent also serves keys from **non-default vaults** |
+| SSH | ed25519 key at `~/.ssh/github`, added to the **macOS keychain**, **registered on GitHub** |
 | Workspace | `~/git/` + clones my repos (see below) |
 | Dock | pinned to an exact list and order — **replaces** whatever is pinned, including the macOS defaults |
 
@@ -106,8 +105,8 @@ live domain, since Rectangle writes bookkeeping keys of its own (`lastVersion`,
 Rectangle's new-install path instead of replaying upgrade migrations.
 
 When an import *does* run, the previous domain is exported to
-`~/.config/mac-bootstrap/com.knollsoft.Rectangle.plist.bak` first — same policy as
-`agent.toml` below — so an overwritten value is recoverable.
+`~/.config/mac-bootstrap/com.knollsoft.Rectangle.plist.bak` first, so an overwritten
+value is recoverable.
 
 If the settings already match and Rectangle simply isn't running, the script skips the
 import entirely and just launches it, since a launch is the only thing that can settle
@@ -195,7 +194,7 @@ databases — is left to each repo's own scripts**, run by you afterwards.
 
 Isolated and **non-fatal** — an unattended run finishes everything else and tells
 you what still needs you. Most of these are handled **inline, during the run**
-(`gh auth login` prompts you, the 1Password agent check waits for you); the closing
+(`gh auth login` prompts you); the closing
 summary lists only work that genuinely **outlives** the script, and says
 "Nothing left that needs a human" when there is none.
 
@@ -207,12 +206,9 @@ summary lists only work that genuinely **outlives** the script, and says
   required`, losing that cask. If admin rights aren't available the run continues;
   only the steps that need root fail, and they're named at the end.
 - **Xcode** — install from the App Store (Apple ID), then re-run.
-- **1Password** — two one-time in-app toggles (Settings ▸ Developer), neither
-  scriptable: **Integrate with 1Password CLI** (needed to generate the SSH key and
-  read the pet token) and **Use the SSH agent** (serves the SSH key so the private
-  key never touches disk). If the agent is off the script opens 1Password and
-  **waits** — press Enter to re-check, or `s` to skip. Every clone depends on it,
-  so racing ahead just produced failed clones.
+- **1Password** — one one-time in-app toggle (Settings ▸ Developer ▸ **Integrate with
+  1Password CLI**), not scriptable. Needed to read the pet token. The SSH key no
+  longer depends on it — see [Why not the 1Password SSH agent](#why-not-the-1password-ssh-agent).
 - **GitHub SSH key** — if `gh` isn't authenticated, the script **runs `gh auth
   login`** so you're prompted through it. Suggested answers: **github.com · SSH ·
   your `~/.ssh/github` key · title `gh` · authenticate with your PAT**. Your
@@ -231,46 +227,36 @@ it warns and carries on.
 
 ## SSH key → GitHub → clone
 
-Uses the **1Password SSH agent** — the private key never touches disk.
+An on-disk **ed25519** key held by the **macOS keychain**.
 
-1. **Generates the key inside 1Password** as a proper **SSH Key** item
-   (`op item create --category ssh`) — the op CLI can't *import* an existing key as
-   an SSH Key item (desktop-app only), so generating it there is the way to get the
-   right item type. Idempotent: skips if the item already exists. Defaults to the
-   `Personal` vault; set `OP_VAULT=…` to override.
-2. Pulls **only the public key** to `~/.ssh/github.pub` (for the ssh-config
-   `IdentityFile` and the GitHub upload), and writes `~/.ssh/config` to point at the
-   1Password agent socket with a `Host github.com` block (`IdentitiesOnly yes` +
-   that one `IdentityFile`) so GitHub authorizes **once per session, not per key**.
-   With Touch ID unlock this is seamless. If `op` isn't available it **falls back to
-   a local on-disk key + Keychain** so the clone still works.
+1. **Generates `~/.ssh/github`** with `ssh-keygen` (comment = your email), `600` on the
+   private half and `644` on the public. Idempotent — an existing key is **never
+   overwritten**. Named for its purpose, not its algorithm: `id_ed25519` is only
+   special as OpenSSH's default-lookup filename, and every `Host` block here sets
+   `IdentityFile` explicitly.
+2. Writes two `~/.ssh/config` blocks, each appended at most once. `Host github.com`
+   (`User git`, that one `IdentityFile`, `IdentitiesOnly yes`) comes **before** the
+   `Host *` catch-all (`AddKeysToAgent`, `UseKeychain`) — ssh keeps the **first**
+   value it finds for each option, so a catch-all placed above would win. Then
+   `ssh-add --apple-use-keychain` loads it, so it survives reboots without a prompt.
 3. Registers the **public** key on **GitHub** via `gh ssh-key add` (treats
    "already in use" as success).
 4. Pre-trusts `github.com` (`ssh-keyscan`) so the first SSH clone doesn't hang, then
    **verifies `ssh -T git@github.com` actually authenticates** before cloning —
-   retry/skip prompt on failure. This also front-loads the 1Password approval onto
-   one foreground connection instead of racing it against seven parallel clones.
+   retry/skip prompt on failure.
 5. Clones the repos over SSH — **skipping any repo already present in `~/git/`**.
 
-## 1Password SSH agent — which vaults it serves
+### Why not the 1Password SSH agent
 
-By default the agent only offers keys from the **default** Personal / Private /
-Employee vault. A key kept in any other vault is simply never offered, and ssh then
-falls through to a password prompt — which reads like a broken key rather than a
-config problem. `~/.config/1Password/ssh/agent.toml` is what widens that.
+It was the earlier design, and it's the better story for key protection — the private
+key never touches disk. It was dropped because 1Password **always** demands an
+interactive approval per key, with no setting to turn it off. Every scripted or
+background git operation stops and waits for a fingerprint, which makes unattended runs
+impossible.
 
-The repo's **`1password/agent.toml`** is the source of truth; the script installs it
-(mode 600). The trap the file's own header calls out: creating it **overrides the
-default wholesale** — the agent then serves *only* what's listed, so the everyday vault
-has to be listed explicitly. Drop it and git over SSH breaks.
-
-Edit the repo copy and re-run `./bootstrap.sh`, not the installed file. If the installed
-file has diverged anyway, the script backs it up to `agent.toml.bak` rather than
-silently overwriting it, so a hand-added vault entry isn't lost.
-
-**What's public:** vault *names* only. No keys, no fingerprints, no item or host names.
-Keep it that way — no hostnames or IPs in the comments, even to explain why a vault is
-listed.
+A passphrase-less key in the keychain never prompts. Its protection is **FileVault plus
+file permissions** rather than 1Password — an accepted trade on a personal machine.
+Keep a copy of the key in 1Password as the backup of record.
 
 ## Security note — pet token
 
