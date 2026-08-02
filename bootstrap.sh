@@ -80,10 +80,14 @@ ensure_traversable() {
   fi
 }
 
-# True (0) when the 1Password CLI is connected; probed once, then cached.
+# True (0) when the 1Password CLI is connected AND signed in; probed once, then
+# cached. `op vault list` rather than `op account list`: the latter succeeds as
+# soon as an account is registered, even while signed out, so it reports a
+# working CLI right up until the first read fails. Listing vaults is the
+# cheapest call that actually needs an authenticated session.
 op_connected() {
   [[ -n "${OP_CONNECTED:-}" ]] && return "$OP_CONNECTED"
-  if have op && op account list >/dev/null 2>&1; then OP_CONNECTED=0; else OP_CONNECTED=1; fi
+  if have op && op vault list >/dev/null 2>&1; then OP_CONNECTED=0; else OP_CONNECTED=1; fi
   return "$OP_CONNECTED"
 }
 
@@ -92,7 +96,7 @@ op_connected() {
 interactive() { [[ -t 0 ]]; }
 
 # Work that outlives the run, reported at the end. Steps that prompt inline
-# (gh auth login, the SSH agent wait) don't belong here.
+# (gh auth login, the GitHub SSH check) don't belong here.
 PENDING=()
 pending() { PENDING+=("$1"); }
 
@@ -106,8 +110,8 @@ cleanup() {
 trap cleanup EXIT
 
 # Re-run <check> until it succeeds, prompting between attempts. Returns 1 if the
-# user skips or the run is unattended. Shared by the two blocking waits (the
-# 1Password SSH agent, and GitHub SSH auth before cloning).
+# user skips or the run is unattended. Used by the GitHub SSH auth check before
+# cloning.
 wait_until() {  # <check-fn> <prompt> <pending-message>
   local check="$1" prompt="$2" pending_msg="$3" ans=""
   while ! "$check"; do
@@ -237,8 +241,8 @@ REPOS=(
 PET_CONFIG_URL="${PET_CONFIG_URL:-https://raw.githubusercontent.com/${GITHUB_USER}/dotfiles/main/pet/config.toml}"
 PET_OP_ITEM="${PET_OP_ITEM:-pet - GitHub Classic Token}"
 
-# 1Password vault holding the pet token and the SSH key ("Personal" is the CLI
-# name for the personal vault; `op` also answers to its old name, "Private").
+# 1Password vault holding the pet token ("Personal" is the CLI name for the
+# personal vault; `op` also answers to its old name, "Private").
 OP_VAULT="${OP_VAULT:-Personal}"
 
 # One email, reused for the git commit identity (.gitconfig) and the Chrome/Google
@@ -459,7 +463,7 @@ else
     # (verified — Rectangle's own lastVersion/SUHasLaunchedBefore survive it).
     # What it does overwrite is a UI change to a key the repo DOES carry, e.g. a
     # shortcut retuned in Rectangle and never re-exported. Snapshot first so that
-    # is recoverable — same policy as agent.toml below.
+    # is recoverable.
     RECTANGLE_BACKUP="$MARKER_DIR/$RECTANGLE_DOMAIN.plist.bak"
     RECTANGLE_BACKED_UP=0
     if defaults read "$RECTANGLE_DOMAIN" >/dev/null 2>&1; then
@@ -919,8 +923,11 @@ if have pet; then
     dryrun_note "if [Gist].access_token blank: op item get \"$PET_OP_ITEM\" → write into config"
   elif [[ -f "$PET_CONFIG" ]] && [[ -z "$(toml_get "$PET_CONFIG" Gist access_token)" ]]; then
     if ! op_connected; then
-      warn "1Password CLI not connected — enable 1Password ▸ Settings ▸ Developer ▸"
-      warn "  'Integrate with 1Password CLI' to store the token there."
+      # Two causes, one symptom: the integration toggle is off, or it's on and
+      # you're signed out. Name both, or the fix looks like a switch to flip
+      # that's already flipped.
+      warn "1Password CLI not usable — either enable 1Password ▸ Settings ▸ Developer ▸"
+      warn "  'Integrate with 1Password CLI', or sign in ('op signin') if it's already on."
       pet_refresh_token || true
     elif ! pet_token_from_op; then
       warn "No usable token in 1Password item '$PET_OP_ITEM' (missing, or no concealed field)."
@@ -937,55 +944,21 @@ if have pet; then
 fi
 
 # ===========================================================================
-# H. SSH key (generated in 1Password as an SSH Key item) + register on GitHub
+# H. SSH key (on disk, macOS keychain agent) + register on GitHub
 # ===========================================================================
-# The key is GENERATED inside 1Password — the op CLI can't import an existing one
-# as an SSH Key item (desktop-app only). The private key never touches disk: the
-# 1Password agent serves it and we pull only the public key, for the ssh-config
-# IdentityFile and the GitHub upload. Falls back to an on-disk key + Keychain
-# when op isn't available.
-section "SSH key (1Password SSH agent)"
-SSH_KEY="$HOME/.ssh/id_ed25519"
-SSH_ITEM_TITLE="${SSH_ITEM_TITLE:-SSH: $HOST}"
-OP_SSH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+# The private key used to live in 1Password, served by its SSH agent — better
+# key protection, but 1Password ALWAYS demands an interactive approval per key
+# with no way to disable it, which stalls every scripted or background git
+# operation. A passphrase-less key in the keychain never prompts; its protection
+# is FileVault plus file permissions instead. Full reasoning and the trade
+# accepted: bootstrap.README.md § "Why not the 1Password SSH agent".
+# ===========================================================================
+section "SSH key (on-disk + macOS keychain)"
+# Purpose-named, not algorithm-named: every Host block below sets IdentityFile
+# explicitly, so OpenSSH's default-lookup name (`id_ed25519`) buys nothing.
+SSH_KEY="$HOME/.ssh/github"
 run mkdir -p "$HOME/.ssh"
 run chmod 700 "$HOME/.ssh"
-
-# ---------------------------------------------------------------------------
-# 1Password SSH agent — which vaults it serves.
-# By default the agent only offers keys from the default Personal/Private/
-# Employee vault, so a key kept anywhere else is invisible to ssh and the
-# connection falls through to a password prompt. agent.toml fixes that, but it
-# OVERRIDES the default wholesale — the agent then serves ONLY what the file
-# lists, which is why the everyday vault has to be listed explicitly too.
-# ---------------------------------------------------------------------------
-OP_AGENT_TOML="$HOME/.config/1Password/ssh/agent.toml"
-OP_AGENT_TOML_SRC="$DOTFILES_DIR/1password/agent.toml"
-if [[ ! -f "$OP_AGENT_TOML_SRC" ]]; then
-  warn "No $OP_AGENT_TOML_SRC in the repo — leaving the agent on its default vaults."
-elif [[ "$DRYRUN" == "1" ]]; then
-  dryrun_note "install $OP_AGENT_TOML_SRC → $OP_AGENT_TOML"
-elif cmp -s "$OP_AGENT_TOML_SRC" "$OP_AGENT_TOML" 2>/dev/null; then
-  ok "1Password agent.toml already matches the repo"
-else
-  # Back up a differing local copy rather than silently discarding it: this file
-  # is what makes non-default vaults reachable, and losing an entry shows up
-  # much later as an unexplained password prompt.
-  if [[ -f "$OP_AGENT_TOML" ]]; then
-    cp "$OP_AGENT_TOML" "$OP_AGENT_TOML.bak"
-    warn "Local agent.toml differed from the repo — kept a copy at $OP_AGENT_TOML.bak"
-    warn "  If the local one was right, copy it into $OP_AGENT_TOML_SRC and commit."
-  fi
-  mkdir -p "$(dirname "$OP_AGENT_TOML")"
-  cp "$OP_AGENT_TOML_SRC" "$OP_AGENT_TOML"
-  chmod 600 "$OP_AGENT_TOML"
-  ok "Installed 1Password agent.toml → $OP_AGENT_TOML"
-  # Troubleshooting advice, not outstanding work — so warn it here in context
-  # rather than adding a line to the "still needs you" summary. The agent
-  # re-reads agent.toml on its next request, but a running session can hold the
-  # old key list.
-  warn "  If ssh still can't see a key, quit and reopen 1Password."
-fi
 
 # Append a block to ~/.ssh/config once (idempotent, keyed by a unique marker).
 append_ssh_block() {  # <grep-marker> <block-text>
@@ -995,78 +968,29 @@ append_ssh_block() {  # <grep-marker> <block-text>
   else printf '%s\n' "$2" >> "$cfg"; fi
 }
 
-# Pause until the 1Password SSH agent socket exists (or the user opts out).
-# Enabling the agent is a one-time in-app toggle we can't script, and every
-# clone depends on it — so we wait instead of failing later.
-op_ssh_agent_on() { [[ -S "$OP_SSH_SOCK" ]]; }
-wait_for_op_ssh_agent() {
-  op_ssh_agent_on && { ok "1Password SSH agent is enabled"; return 0; }
-  warn "1Password SSH agent is OFF — enable it: 1Password ▸ Settings ▸ Developer ▸ 'Use the SSH agent'."
-  warn "  One-time in-app toggle (can't be scripted). Opening 1Password…"
-  open -a "1Password" 2>/dev/null || true
-  wait_until op_ssh_agent_on \
-    "Turn it on, then press Enter to re-check (or 's' to skip): " \
-    "1Password: turn on Settings ▸ Developer ▸ 'Use the SSH agent', then re-run." || return 1
-  ok "1Password SSH agent is enabled"
-}
-
-pull_op_key() {  # <op-reference> <dest> <chmod-mode> <label> — idempotent
-  if [[ -f "$2" ]]; then ok "$4 already present at $2"; return 0; fi
-  if op read "$1" > "$2" 2>/dev/null && [[ -s "$2" ]]; then
-    chmod "$3" "$2"; ok "Wrote $4 → $2"
-  else
-    rm -f "$2"; warn "Could not read the $4 from 1Password (vault '$OP_VAULT'?)."
-  fi
-}
-
-if [[ "$DRYRUN" != "1" ]] && op_connected; then
-  # 1. Ensure the SSH Key item exists in 1Password (idempotent — generate once).
-  if op item get "$SSH_ITEM_TITLE" --vault "$OP_VAULT" >/dev/null 2>&1; then
-    ok "1Password SSH Key item '$SSH_ITEM_TITLE' already exists"
-  else
-    info "Generating a new SSH Key in 1Password ('$SSH_ITEM_TITLE', vault $OP_VAULT)…"
-    op item create --category ssh --title "$SSH_ITEM_TITLE" --vault "$OP_VAULT" >/dev/null \
-      && ok "Created 1Password SSH Key item" \
-      || warn "Could not create the SSH Key item in 1Password."
-  fi
-  # 2. Pull ONLY the public key — the private key stays in 1Password (agent-served).
-  pull_op_key "op://$OP_VAULT/$SSH_ITEM_TITLE/public key" "$SSH_KEY.pub" 644 "public key"
-  # 3. Point ssh at the 1Password agent, and restrict GitHub to just this key so
-  #    it authorizes once per session instead of once per key.
-  append_ssh_block '1password/t/agent.sock' "Host *
-  IdentityAgent \"$OP_SSH_SOCK\"
-"
-  append_ssh_block '^Host github.com' "Host github.com
-  IdentitiesOnly yes
-  IdentityFile $SSH_KEY.pub
-"
-  # 4. Block until the agent is on — the private key lives only in 1Password, so
-  #    without it every clone fails to authenticate. `|| true`: skipping returns
-  #    1, and as the branch's last statement errexit would kill the script.
-  wait_for_op_ssh_agent || true
-elif [[ "$DRYRUN" == "1" ]]; then
-  dryrun_note "ensure 1Password SSH Key item '$SSH_ITEM_TITLE', pull public key → $SSH_KEY.pub,"
-  dryrun_note "configure ~/.ssh/config for the 1Password SSH agent (private key stays in 1Password)"
-  append_ssh_block '1password/t/agent.sock' ""
-  append_ssh_block '^Host github.com' ""
+if [[ -f "$SSH_KEY" ]]; then
+  ok "SSH key already exists — not overwriting ($SSH_KEY)"
 else
-  # Fallback: no op — local on-disk key + Keychain (no agent available).
-  warn "1Password CLI not available/connected — using a local on-disk key + Keychain instead."
-  warn "  (Enable 1Password ▸ Settings ▸ Developer ▸ Integrate with 1Password CLI to store it as an SSH Key item.)"
-  pending "1Password: enable Settings ▸ Developer ▸ 'Integrate with 1Password CLI', then re-run."
-  if [[ -f "$SSH_KEY" ]]; then
-    ok "SSH key already exists — not overwriting ($SSH_KEY)"
-  else
-    run ssh-keygen -t ed25519 -C "$GOOGLE_EMAIL" -f "$SSH_KEY" -N ""
-    run chmod 600 "$SSH_KEY"; run chmod 644 "${SSH_KEY}.pub"
-  fi
-  append_ssh_block 'UseKeychain yes' "Host *
+  run ssh-keygen -t ed25519 -C "$GOOGLE_EMAIL" -f "$SSH_KEY" -N ""
+  run chmod 600 "$SSH_KEY"; run chmod 644 "${SSH_KEY}.pub"
+  # The only copy of a passphrase-less private key, and nothing else will ever
+  # remind you — the security argument above assumes this backup exists.
+  pending "1Password: save a copy of $SSH_KEY as the backup of record."
+fi
+
+# Specific hosts must precede the `Host *` catch-all: ssh keeps the FIRST value
+# it obtains for each option, so a catch-all placed above would win.
+append_ssh_block '^Host github.com' "Host github.com
+  User git
+  IdentityFile $SSH_KEY
+  IdentitiesOnly yes
+"
+append_ssh_block 'UseKeychain yes' "Host *
   AddKeysToAgent yes
   UseKeychain yes
   IdentityFile $SSH_KEY
 "
-  [[ -f "$SSH_KEY" ]] && ssh-add --apple-use-keychain "$SSH_KEY" 2>/dev/null || true
-fi
+run ssh-add --apple-use-keychain "$SSH_KEY" 2>/dev/null || true
 
 section "Add SSH key to GitHub"
 if ! have gh; then
@@ -1081,7 +1005,7 @@ else
     gh_authed=1
   else
     info "gh is not authenticated — starting 'gh auth login'…"
-    info "Suggested answers: github.com · SSH · your ~/.ssh/id_ed25519 key · title 'gh' · authenticate with your PAT."
+    info "Suggested answers: github.com · SSH · your ${SSH_KEY} key · title 'gh' · authenticate with your PAT."
     gh auth login || warn "gh auth login was cancelled or failed."
     gh auth status >/dev/null 2>&1 && gh_authed=1 || gh_authed=0
   fi
@@ -1120,9 +1044,9 @@ if [[ "$DRYRUN" == "1" ]] || ! ssh-keygen -F github.com >/dev/null 2>&1; then
   run_sh "ssh-keyscan -t ed25519,rsa github.com >> \"$HOME/.ssh/known_hosts\" 2>/dev/null" || true
 fi
 
-# Confirm SSH auth before cloning: it front-loads the 1Password approval onto one
-# foreground connection instead of racing seven parallel clones. `ssh -T` exits 1
-# even on success, so match the greeting, not the exit status.
+# Confirm SSH auth before cloning, so one clear failure here replaces seven
+# confusing ones in the parallel clone fan-out. `ssh -T` exits 1 even on success,
+# so match the greeting, not the exit status.
 github_ssh_ok() {
   local out
   out="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
@@ -1133,7 +1057,7 @@ if [[ "$DRYRUN" != "1" ]]; then
   if github_ssh_ok; then
     ok "SSH to github.com authenticates"
   else
-    warn "SSH to github.com isn't authenticating yet (agent off, key not registered, or not yet approved)."
+    warn "SSH to github.com isn't authenticating yet (key not registered, or not loaded into the agent)."
     wait_until github_ssh_ok \
       "Press Enter to retry (or 's' to skip the check): " \
       "GitHub: SSH didn't authenticate — some clones may have failed." \
