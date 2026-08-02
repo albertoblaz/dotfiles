@@ -193,10 +193,9 @@ databases — is left to each repo's own scripts**, run by you afterwards.
 ## Steps that need a human (interactive)
 
 Isolated and **non-fatal** — an unattended run finishes everything else and tells
-you what still needs you. Most of these are handled **inline, during the run**
-(`gh auth login` prompts you); the closing
-summary lists only work that genuinely **outlives** the script, and says
-"Nothing left that needs a human" when there is none.
+you what still needs you. Only one is handled **inline, during the run**: `gh auth
+login` prompts you. The closing summary lists work that genuinely **outlives** the
+script, and says "Nothing left that needs a human" when there is none.
 
 - **Admin password** — asked for **once at the start** (`sudo -v`), then kept warm
   in the background for the rest of the run. A few casks symlink into
@@ -206,9 +205,11 @@ summary lists only work that genuinely **outlives** the script, and says
   required`, losing that cask. If admin rights aren't available the run continues;
   only the steps that need root fail, and they're named at the end.
 - **Xcode** — install from the App Store (Apple ID), then re-run.
-- **1Password** — one one-time in-app toggle (Settings ▸ Developer ▸ **Integrate with
+- **1Password** — a one-time in-app toggle (Settings ▸ Developer ▸ **Integrate with
   1Password CLI**), not scriptable. Needed to read the pet token. The SSH key no
   longer depends on it — see [Why not the 1Password SSH agent](#why-not-the-1password-ssh-agent).
+  If the toggle is already on, the same check also fails when you're simply signed
+  out — the script probes `op vault list`, which needs a live session.
 - **GitHub SSH key** — if `gh` isn't authenticated, the script **runs `gh auth
   login`** so you're prompted through it. Suggested answers: **github.com · SSH ·
   your `~/.ssh/github` key · title `gh` · authenticate with your PAT**. Your

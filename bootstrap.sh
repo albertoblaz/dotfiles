@@ -241,8 +241,8 @@ REPOS=(
 PET_CONFIG_URL="${PET_CONFIG_URL:-https://raw.githubusercontent.com/${GITHUB_USER}/dotfiles/main/pet/config.toml}"
 PET_OP_ITEM="${PET_OP_ITEM:-pet - GitHub Classic Token}"
 
-# 1Password vault holding the pet token and the SSH key ("Personal" is the CLI
-# name for the personal vault; `op` also answers to its old name, "Private").
+# 1Password vault holding the pet token ("Personal" is the CLI name for the
+# personal vault; `op` also answers to its old name, "Private").
 OP_VAULT="${OP_VAULT:-Personal}"
 
 # One email, reused for the git commit identity (.gitconfig) and the Chrome/Google
@@ -923,8 +923,11 @@ if have pet; then
     dryrun_note "if [Gist].access_token blank: op item get \"$PET_OP_ITEM\" → write into config"
   elif [[ -f "$PET_CONFIG" ]] && [[ -z "$(toml_get "$PET_CONFIG" Gist access_token)" ]]; then
     if ! op_connected; then
-      warn "1Password CLI not connected — enable 1Password ▸ Settings ▸ Developer ▸"
-      warn "  'Integrate with 1Password CLI' to store the token there."
+      # Two causes, one symptom: the integration toggle is off, or it's on and
+      # you're signed out. Name both, or the fix looks like a switch to flip
+      # that's already flipped.
+      warn "1Password CLI not usable — either enable 1Password ▸ Settings ▸ Developer ▸"
+      warn "  'Integrate with 1Password CLI', or sign in ('op signin') if it's already on."
       pet_refresh_token || true
     elif ! pet_token_from_op; then
       warn "No usable token in 1Password item '$PET_OP_ITEM' (missing, or no concealed field)."
@@ -943,12 +946,16 @@ fi
 # ===========================================================================
 # H. SSH key (on disk, macOS keychain agent) + register on GitHub
 # ===========================================================================
+# The private key used to live in 1Password, served by its SSH agent — better
+# key protection, but 1Password ALWAYS demands an interactive approval per key
+# with no way to disable it, which stalls every scripted or background git
+# operation. A passphrase-less key in the keychain never prompts; its protection
+# is FileVault plus file permissions instead. Full reasoning and the trade
+# accepted: bootstrap.README.md § "Why not the 1Password SSH agent".
+# ===========================================================================
 section "SSH key (on-disk + macOS keychain)"
-# Named for its purpose rather than its algorithm. `id_ed25519` is only special
-# as OpenSSH's default-lookup filename, and every Host block here sets
-# IdentityFile explicitly, so the default buys nothing. Purpose-named keys stay
-# readable in ~/.ssh and in a server's authorized_keys once there is more than
-# one of them.
+# Purpose-named, not algorithm-named: every Host block below sets IdentityFile
+# explicitly, so OpenSSH's default-lookup name (`id_ed25519`) buys nothing.
 SSH_KEY="$HOME/.ssh/github"
 run mkdir -p "$HOME/.ssh"
 run chmod 700 "$HOME/.ssh"
@@ -961,22 +968,14 @@ append_ssh_block() {  # <grep-marker> <block-text>
   else printf '%s\n' "$2" >> "$cfg"; fi
 }
 
-
-# On-disk key + macOS keychain agent. This used to keep the private key in
-# 1Password and let its SSH agent serve it, which is the better story for key
-# protection — but 1Password ALWAYS demands an interactive approval per key
-# ("You'll always be asked to authorize the use of each private key"), with no
-# setting to disable it. That makes every scripted or background git operation
-# stop and wait for a fingerprint, and unattended deploys impossible.
-#
-# A passphrase-less key in the keychain never prompts. Its protection is
-# FileVault plus file permissions instead of 1Password — an accepted trade for a
-# personal machine. Keep a copy of the key in 1Password as the backup of record.
 if [[ -f "$SSH_KEY" ]]; then
   ok "SSH key already exists — not overwriting ($SSH_KEY)"
 else
   run ssh-keygen -t ed25519 -C "$GOOGLE_EMAIL" -f "$SSH_KEY" -N ""
   run chmod 600 "$SSH_KEY"; run chmod 644 "${SSH_KEY}.pub"
+  # The only copy of a passphrase-less private key, and nothing else will ever
+  # remind you — the security argument above assumes this backup exists.
+  pending "1Password: save a copy of $SSH_KEY as the backup of record."
 fi
 
 # Specific hosts must precede the `Host *` catch-all: ssh keeps the FIRST value
@@ -991,11 +990,7 @@ append_ssh_block 'UseKeychain yes' "Host *
   UseKeychain yes
   IdentityFile $SSH_KEY
 "
-if [[ "$DRYRUN" == "1" ]]; then
-  dryrun_note "ssh-add --apple-use-keychain $SSH_KEY"
-else
-  [[ -f "$SSH_KEY" ]] && ssh-add --apple-use-keychain "$SSH_KEY" 2>/dev/null || true
-fi
+run ssh-add --apple-use-keychain "$SSH_KEY" 2>/dev/null || true
 
 section "Add SSH key to GitHub"
 if ! have gh; then
@@ -1049,9 +1044,9 @@ if [[ "$DRYRUN" == "1" ]] || ! ssh-keygen -F github.com >/dev/null 2>&1; then
   run_sh "ssh-keyscan -t ed25519,rsa github.com >> \"$HOME/.ssh/known_hosts\" 2>/dev/null" || true
 fi
 
-# Confirm SSH auth before cloning: it front-loads the 1Password approval onto one
-# foreground connection instead of racing seven parallel clones. `ssh -T` exits 1
-# even on success, so match the greeting, not the exit status.
+# Confirm SSH auth before cloning, so one clear failure here replaces seven
+# confusing ones in the parallel clone fan-out. `ssh -T` exits 1 even on success,
+# so match the greeting, not the exit status.
 github_ssh_ok() {
   local out
   out="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
@@ -1062,7 +1057,7 @@ if [[ "$DRYRUN" != "1" ]]; then
   if github_ssh_ok; then
     ok "SSH to github.com authenticates"
   else
-    warn "SSH to github.com isn't authenticating yet (agent off, key not registered, or not yet approved)."
+    warn "SSH to github.com isn't authenticating yet (key not registered, or not loaded into the agent)."
     wait_until github_ssh_ok \
       "Press Enter to retry (or 's' to skip the check): " \
       "GitHub: SSH didn't authenticate — some clones may have failed." \
