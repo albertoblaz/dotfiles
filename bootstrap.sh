@@ -506,7 +506,6 @@ DOCK_APPS=(
   "/System/Applications/Calendar.app"
   "$TRELLO_APP"
   "/Applications/Google Chrome.app"
-  "/Applications/Safari.app"
   "/Applications/Ghostty.app"
   "/Applications/Zed.app"
   "/Applications/Claude.app"
@@ -519,6 +518,7 @@ DOCK_APPS=(
   "/Applications/WhatsApp.app"
   "/Applications/Telegram.app"
   "/System/Applications/App Store.app"
+  "/System/Applications/Utilities/Activity Monitor.app"
   "/System/Applications/System Settings.app"
 )
 DOCK_OTHERS=("$HOME/Downloads")
@@ -531,9 +531,10 @@ dock_dir_tile() {
   printf '<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>%s</string><key>_CFURLStringType</key><integer>0</integer></dict><key>file-type</key><integer>2</integer></dict><key>tile-type</key><string>directory-tile</string></dict>' "$1"
 }
 
-# Compare by name, not URL: the Dock rewrites what we write (Safari resolves to
-# /System/Volumes/Preboot/Cryptexes/…, spaces become %20), so comparing URLs
-# would report a difference on every run and rebuild the Dock each time.
+# Compare by name, not URL: the Dock rewrites what we write (spaces become %20,
+# and some system apps resolve to /System/Volumes/Preboot/Cryptexes/…), so
+# comparing URLs would report a difference on every run and rebuild the Dock
+# each time.
 dock_current_names() {  # <persistent-apps|persistent-others>
   local url name
   defaults read com.apple.dock "$1" 2>/dev/null \
