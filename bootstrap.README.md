@@ -29,6 +29,7 @@ where no formula exists: **Claude Code**, **rtk**, **oh-my-zsh**.
 | curl installers | oh-my-zsh, Claude Code, rtk |
 | Runtime manager | mise + a global Node (LTS) and **gws** (`@googleworkspace/cli`) |
 | git config | copies the repo's `git/.gitconfig` to `~/.gitconfig`, filling the email placeholder |
+| Editor | exports `EDITOR=vim` in `~/.zshrc` (after oh-my-zsh, which rewrites that file) |
 | Claude Code | merges the repo's `claude/settings.json` into `~/.claude/settings.json` (auto mode by default) |
 | Rectangle | imports the repo's `rectangle/com.knollsoft.Rectangle.plist`, then launches the app so it arms **Launch at login** |
 | Apple toolchain | Xcode Command Line Tools, full Xcode (**Mac App Store**), iOS simulator runtime |
@@ -147,6 +148,12 @@ The token is read from the 1Password item named **`pet - GitHub Classic Token`**
 (override with `PET_OP_ITEM`). If that item doesn't exist, the script **creates it**
 from a token you paste in. The committed config already has the real `gist_id`
 (syncing `pet-snippet.toml`) — the Gist id is not a secret.
+
+`[General].Editor` is forced to **vim** whenever it's blank or the Debian-only
+`sensible-editor` — pet execs that string literally, with no `$EDITOR` fallback, so
+on macOS the stock value makes `pet edit` fail with `exit status 127`. Repaired on
+every re-run, not just at download time: the config already exists on a provisioned
+machine, so refreshing the committed copy alone would never reach it.
 
 `~/.config/pet/config.toml` is chmod **600** — `curl` creates it world-readable
 and the GitHub token gets written into it. The TOML writer preserves the file's

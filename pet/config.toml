@@ -13,7 +13,7 @@
   Cmd = []
   Color = false
   Column = 40
-  Editor = "sensible-editor"
+  Editor = "vim"
   Format = "[$description]: $command $tags"
   SelectCmd = "fzf --ansi --layout=reverse --border --height=90% --pointer=* --cycle --prompt=Snippets:"
   SnippetDirs = []

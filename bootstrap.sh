@@ -604,6 +604,25 @@ else
   run_sh 'RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"'
 fi
 
+# $EDITOR for every tool that reads it. Must come AFTER oh-my-zsh: its installer
+# replaces ~/.zshrc with a fresh template (the old one is backed up), so an
+# earlier append would be lost. The stock template only ships EDITOR commented
+# out, which leaves it unset — and an unset $EDITOR is how `pet edit` ended up
+# calling the Debian-only `sensible-editor`. git survives it (it falls back to
+# its built-in `vi`); tools without a fallback chain don't.
+EDITOR_RC="$HOME/.zshrc"
+EDITOR_LINE="export EDITOR='vim'"
+if [[ "$DRYRUN" == "1" ]]; then
+  dryrun_note "if ~/.zshrc has no active EDITOR export: append \"$EDITOR_LINE\""
+elif grep -qsE '^[[:space:]]*export[[:space:]]+EDITOR=' "$EDITOR_RC"; then
+  ok "~/.zshrc already exports EDITOR"
+else
+  [[ -f "$EDITOR_RC" ]] || run touch "$EDITOR_RC"
+  printf '%s\n' "$EDITOR_LINE" >> "$EDITOR_RC" \
+    && ok "Set EDITOR=vim in ~/.zshrc" \
+    || warn "Could not append the EDITOR export to $EDITOR_RC."
+fi
+
 section "Claude Code"
 # Check the path too: ~/.local/bin isn't on a fresh PATH, so `have claude` alone
 # would re-run the installer every time.
@@ -915,6 +934,22 @@ if have pet; then
     if [[ ! -f "$PET_SNIPPETS" ]]; then
       mkdir -p "$(dirname "$PET_SNIPPETS")"
       touch "$PET_SNIPPETS" && ok "Created empty $PET_SNIPPETS (pet requires it to exist)"
+    fi
+  fi
+
+  # 1c. pet execs [General].Editor literally — no $EDITOR fallback, no $PATH
+  #     search rescue. A config written while $EDITOR was unset carries
+  #     "sensible-editor", which is Debian-only, so `pet edit` dies with 127.
+  #     Repaired here rather than only in the committed config: this file already
+  #     exists on a re-run, so the download in step 1 never touches it.
+  if [[ "$DRYRUN" == "1" ]]; then
+    dryrun_note "if [General].Editor is blank or 'sensible-editor': set it to vim"
+  elif [[ -f "$PET_CONFIG" ]]; then
+    pet_editor="$(toml_get "$PET_CONFIG" General Editor)"
+    if [[ -z "$pet_editor" || "$pet_editor" == "sensible-editor" ]]; then
+      toml_set "$PET_CONFIG" General Editor "vim" \
+        && ok "Set pet Editor → vim" \
+        || warn "Could not set Editor in $PET_CONFIG."
     fi
   fi
 

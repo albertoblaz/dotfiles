@@ -1,5 +1,7 @@
 [color]
         ui = true
+[core]
+        editor = vim
 [user]
         name = Alberto Blazquez
         email = WORK_EMAIL_ADDRESS
