@@ -28,7 +28,7 @@ where no formula exists: **Claude Code**, **rtk**, **oh-my-zsh**.
 | Apps (brew casks) | Ghostty, Claude Desktop, Logseq, 1Password, Zed, Google Chrome, Spotify, Docker Desktop, Dropbox, Tailscale, Rectangle, Telegram, WhatsApp, ChatGPT |
 | curl installers | oh-my-zsh, Claude Code, rtk |
 | Runtime manager | mise + a global Node (LTS) and **gws** (`@googleworkspace/cli`) |
-| git config | copies the repo's `.gitconfig` to `~/.gitconfig`, filling the email placeholder |
+| git config | copies the repo's `git/.gitconfig` to `~/.gitconfig`, filling the email placeholder |
 | Claude Code | merges the repo's `claude/settings.json` into `~/.claude/settings.json` (auto mode by default) |
 | Rectangle | imports the repo's `rectangle/com.knollsoft.Rectangle.plist`, then launches the app so it arms **Launch at login** |
 | Apple toolchain | Xcode Command Line Tools, full Xcode (**Mac App Store**), iOS simulator runtime |
@@ -129,7 +129,7 @@ can't be scripted safely, so this step is a one-time prompt, marker-guarded.
 
 The script asks for your email **once** at the start and reuses it for three things:
 the git commit identity (`.gitconfig`), the SSH key comment, and the Chrome/Google
-sign-in. It's PII, so it's **never** committed — the repo's `.gitconfig` keeps a
+sign-in. It's PII, so it's **never** committed — the repo's `git/.gitconfig` keeps a
 `WORK_EMAIL_ADDRESS` placeholder, and the script substitutes your address only in
 the local `~/.gitconfig` copy. (If your git/work email differs from your Google
 account, split the prompt back into two.)

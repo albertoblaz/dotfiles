@@ -221,7 +221,7 @@ fi
 GITHUB_USER="albertoblaz"
 HOST="$(hostname -s)"
 MARKER_DIR="$HOME/.config/mac-bootstrap"
-# Directory this script lives in (= the dotfiles repo) — source of .gitconfig etc.
+# Directory this script lives in (= the dotfiles repo) — source of git/.gitconfig etc.
 DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Repos to clone into ~/git (alphabetical). Cloning is all this does — per-project
@@ -253,15 +253,15 @@ read -rp "Your email (git config, Google sign-in): " GOOGLE_EMAIL || true
 
 # Apply the repo's .gitconfig locally (COPY, not symlink, so we can fill the email
 # placeholder without writing PII back into the public repo).
-if [[ -f "$DOTFILES_DIR/.gitconfig" ]]; then
+if [[ -f "$DOTFILES_DIR/git/.gitconfig" ]]; then
   if [[ -f "$HOME/.gitconfig" ]] && grep -qs 'gst = git status' "$HOME/.gitconfig"; then
     # A distinctive alias from our .gitconfig → it's already applied. Idempotent.
     ok "~/.gitconfig already applied"
   elif [[ -e "$HOME/.gitconfig" && ! -L "$HOME/.gitconfig" ]]; then
-    warn "Existing ~/.gitconfig (not ours) — leaving it; merge $DOTFILES_DIR/.gitconfig manually."
+    warn "Existing ~/.gitconfig (not ours) — leaving it; merge $DOTFILES_DIR/git/.gitconfig manually."
   else
     run rm -f "$HOME/.gitconfig"                       # drop any symlink from older runs
-    run cp "$DOTFILES_DIR/.gitconfig" "$HOME/.gitconfig"
+    run cp "$DOTFILES_DIR/git/.gitconfig" "$HOME/.gitconfig"
     if [[ -n "$GOOGLE_EMAIL" ]]; then
       esc="${GOOGLE_EMAIL//\//\\/}"                    # escape '/' for sed
       run_sh "sed -i '' 's/WORK_EMAIL_ADDRESS/$esc/' \"$HOME/.gitconfig\""
