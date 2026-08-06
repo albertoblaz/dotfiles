@@ -339,7 +339,7 @@ fi
 # B. CLI tools (brew)
 # ===========================================================================
 section "CLI tools"
-FORMULAE=(git curl vim zsh gh jq mise pet)   # jq merges the Claude Code settings below
+FORMULAE=(git curl vim zsh gh jq mise pet fzf)
 CLI_CASKS=(1password-cli)                    # provides `op`; shipped as a cask, not a formula
 info "Installing: ${FORMULAE[*]} ${CLI_CASKS[*]}"
 brew_install_each formula "${FORMULAE[@]}"
