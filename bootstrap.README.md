@@ -24,7 +24,7 @@ where no formula exists: **Claude Code**, **rtk**, **oh-my-zsh**.
 
 | Category | Tools |
 |----------|-------|
-| CLI tools | git, curl, vim, zsh, gh, jq, mise, pet (formulae) + `1password-cli` (`op`) — a **cask**, no formula of that name exists |
+| CLI tools | git, curl, vim, zsh, gh, jq, mise, pet, fzf, hcloud (formulae) + `1password-cli` (`op`) — a **cask**, no formula of that name exists |
 | Apps (brew casks) | Ghostty, Claude Desktop, Logseq, 1Password, Zed, Google Chrome, Spotify, Docker Desktop, Dropbox, Tailscale, Rectangle, Telegram, WhatsApp, ChatGPT |
 | curl installers | oh-my-zsh, Claude Code, rtk |
 | Runtime manager | mise + a global Node (LTS) and **gws** (`@googleworkspace/cli`) |
